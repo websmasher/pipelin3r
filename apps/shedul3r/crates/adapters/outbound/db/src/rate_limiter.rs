@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use domain_types::{RateLimitConfig, SchedulrError};
+use limit3r::{Limit3rError, RateLimitConfig, RateLimiter};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
@@ -43,15 +43,15 @@ impl InMemoryRateLimiter {
     }
 }
 
-impl repo::RateLimiter for InMemoryRateLimiter {
+impl RateLimiter for InMemoryRateLimiter {
     async fn acquire_permission(
         &self,
         key: &str,
         config: &RateLimitConfig,
-    ) -> Result<(), SchedulrError> {
+    ) -> Result<(), Limit3rError> {
         let deadline = Instant::now()
             .checked_add(config.timeout_duration)
-            .ok_or_else(|| SchedulrError::RateLimitExceeded {
+            .ok_or_else(|| Limit3rError::RateLimitExceeded {
                 key: key.to_owned(),
             })?;
 
@@ -72,7 +72,7 @@ impl repo::RateLimiter for InMemoryRateLimiter {
                 }
 
                 let Some(entry) = map.get_mut(key) else {
-                    return Err(SchedulrError::RateLimitExceeded {
+                    return Err(Limit3rError::RateLimitExceeded {
                         key: key.to_owned(),
                     });
                 };
@@ -92,7 +92,7 @@ impl repo::RateLimiter for InMemoryRateLimiter {
                 let next_window = entry
                     .window_start
                     .checked_add(config.limit_refresh_period)
-                    .ok_or_else(|| SchedulrError::RateLimitExceeded {
+                    .ok_or_else(|| Limit3rError::RateLimitExceeded {
                         key: key.to_owned(),
                     })?;
                 drop(map);
@@ -101,7 +101,7 @@ impl repo::RateLimiter for InMemoryRateLimiter {
 
             // If waiting would exceed our deadline, fail immediately
             if sleep_until > deadline {
-                return Err(SchedulrError::RateLimitExceeded {
+                return Err(Limit3rError::RateLimitExceeded {
                     key: key.to_owned(),
                 });
             }

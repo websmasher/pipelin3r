@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use domain_types::{CircuitBreakerConfig, SchedulrError};
+use limit3r::{CircuitBreakerConfig, CircuitBreaker, Limit3rError};
 use parking_lot::RwLock;
 use tokio::time::Instant;
 
@@ -91,19 +91,19 @@ impl InMemoryCircuitBreaker {
     }
 }
 
-impl repo::CircuitBreaker for InMemoryCircuitBreaker {
+impl CircuitBreaker for InMemoryCircuitBreaker {
     fn check_permitted(
         &self,
         key: &str,
         config: &CircuitBreakerConfig,
-    ) -> Result<(), SchedulrError> {
+    ) -> Result<(), Limit3rError> {
         let mut map = self.state.write();
         let needs_insert = !map.contains_key(key);
         if needs_insert {
             let _prev = map.insert(key.to_owned(), CircuitState::new());
         }
         let Some(circuit) = map.get_mut(key) else {
-            return Err(SchedulrError::CircuitOpen {
+            return Err(Limit3rError::CircuitOpen {
                 key: key.to_owned(),
             });
         };
@@ -117,7 +117,7 @@ impl repo::CircuitBreaker for InMemoryCircuitBreaker {
                     circuit.state = State::Open;
                     circuit.opened_at = Some(Instant::now());
                     tracing::info!(key, rate, "Circuit breaker opened");
-                    Err(SchedulrError::CircuitOpen {
+                    Err(Limit3rError::CircuitOpen {
                         key: key.to_owned(),
                     })
                 } else {
@@ -135,14 +135,14 @@ impl repo::CircuitBreaker for InMemoryCircuitBreaker {
                     tracing::debug!(key, "Circuit breaker transitioning to half-open");
                     Ok(())
                 } else {
-                    Err(SchedulrError::CircuitOpen {
+                    Err(Limit3rError::CircuitOpen {
                         key: key.to_owned(),
                     })
                 }
             }
             State::HalfOpen => {
                 // Only one probe call allowed in half-open
-                Err(SchedulrError::CircuitOpen {
+                Err(Limit3rError::CircuitOpen {
                     key: key.to_owned(),
                 })
             }

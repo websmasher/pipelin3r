@@ -321,15 +321,17 @@ fn exec_result_to_response(
 ) -> TaskResponse {
     match result {
         Ok(r) => build_task_response(r, started_at, elapsed),
-        Err(SchedulrError::RetryExhausted { attempts }) => TaskResponse {
-            success: false,
-            output: format!("All {attempts} retry attempts exhausted"),
-            metadata: ExecutionMetadata {
-                started_at,
-                elapsed,
-                exit_code: 1,
-            },
-        },
+        Err(SchedulrError::Resilience(limit3r::Limit3rError::RetryExhausted { attempts })) => {
+            TaskResponse {
+                success: false,
+                output: format!("All {attempts} retry attempts exhausted"),
+                metadata: ExecutionMetadata {
+                    started_at,
+                    elapsed,
+                    exit_code: 1,
+                },
+            }
+        }
         Err(other) => TaskResponse {
             success: false,
             output: other.to_string(),
@@ -446,7 +448,7 @@ mod tests {
             &self,
             _key: &str,
             _config: &domain_types::RateLimitConfig,
-        ) -> Result<(), SchedulrError> {
+        ) -> Result<(), limit3r::Limit3rError> {
             Ok(())
         }
     }
@@ -461,7 +463,7 @@ mod tests {
             &self,
             _key: &str,
             _config: &CircuitBreakerConfig,
-        ) -> Result<(), SchedulrError> {
+        ) -> Result<(), limit3r::Limit3rError> {
             Ok(())
         }
 
@@ -493,7 +495,7 @@ mod tests {
             &self,
             _key: &str,
             _config: &domain_types::BulkheadConfig,
-        ) -> impl Future<Output = Result<(), SchedulrError>> + Send {
+        ) -> impl Future<Output = Result<(), limit3r::Limit3rError>> + Send {
             let sem = Arc::clone(&self.semaphore);
             // Increment acquire count before the future resolves.
             // We do it eagerly here so it's visible to the test immediately.
@@ -503,7 +505,7 @@ mod tests {
                 // because release is handled by our guard / manual release call.
                 sem.acquire_owned()
                     .await
-                    .map_err(|_| SchedulrError::BulkheadFull {
+                    .map_err(|_| limit3r::Limit3rError::BulkheadFull {
                         key: "mock".to_owned(),
                     })?
                     .forget();
@@ -523,15 +525,16 @@ mod tests {
     struct MockRetryExecutor;
 
     impl RetryExecutor for MockRetryExecutor {
-        async fn execute_with_retry<F, Fut, T>(
+        async fn execute_with_retry<F, Fut, T, E>(
             &self,
             operation: F,
             _config: &domain_types::RetryConfig,
-        ) -> Result<T, SchedulrError>
+        ) -> Result<T, E>
         where
             F: Fn() -> Fut + Send + Sync,
-            Fut: Future<Output = Result<T, SchedulrError>> + Send,
+            Fut: Future<Output = Result<T, E>> + Send,
             T: Send,
+            E: From<limit3r::Limit3rError> + Send,
         {
             operation().await
         }

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use domain_types::{BulkheadConfig, SchedulrError};
+use limit3r::{Bulkhead, BulkheadConfig, Limit3rError};
 use parking_lot::RwLock;
 use tokio::sync::Semaphore;
 
@@ -24,7 +24,7 @@ type StateMap = BTreeMap<String, BulkheadState>;
 /// Each key gets its own [`Semaphore`] with `max_concurrent` permits.
 /// Callers acquire a permit before executing and release it when done.
 /// If no permits are available, the caller waits up to `max_wait_duration`
-/// before receiving a [`SchedulrError::BulkheadFull`] error.
+/// before receiving a [`Limit3rError::BulkheadFull`] error.
 #[derive(Debug)]
 pub struct InMemoryBulkhead {
     state: RwLock<StateMap>,
@@ -94,8 +94,8 @@ impl InMemoryBulkhead {
     }
 }
 
-impl repo::Bulkhead for InMemoryBulkhead {
-    async fn acquire(&self, key: &str, config: &BulkheadConfig) -> Result<(), SchedulrError> {
+impl Bulkhead for InMemoryBulkhead {
+    async fn acquire(&self, key: &str, config: &BulkheadConfig) -> Result<(), Limit3rError> {
         let semaphore = self.get_or_create_semaphore(key, config);
 
         let result = tokio::time::timeout(config.max_wait_duration, semaphore.acquire()).await;
@@ -109,11 +109,11 @@ impl repo::Bulkhead for InMemoryBulkhead {
             }
             Ok(Err(_closed)) => {
                 // Semaphore was closed — treat as full
-                Err(SchedulrError::BulkheadFull {
+                Err(Limit3rError::BulkheadFull {
                     key: key.to_owned(),
                 })
             }
-            Err(_timeout) => Err(SchedulrError::BulkheadFull {
+            Err(_timeout) => Err(Limit3rError::BulkheadFull {
                 key: key.to_owned(),
             }),
         }

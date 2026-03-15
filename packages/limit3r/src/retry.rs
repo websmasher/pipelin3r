@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use limit3r::{Limit3rError, RetryConfig, RetryExecutor};
+use crate::config::RetryConfig;
+use crate::error::Limit3rError;
+use crate::traits::RetryExecutor;
 
 /// Retry executor that uses [`tokio::time::sleep`] between attempts.
 ///

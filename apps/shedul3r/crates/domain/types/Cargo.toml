@@ -10,5 +10,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+limit3r = { path = "../../../../../packages/limit3r" }
 serde = { workspace = true }
 thiserror = { workspace = true }

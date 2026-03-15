@@ -1,13 +1,27 @@
-//! Resilience patterns: rate limiter, circuit breaker, bulkhead.
+//! Resilience patterns: rate limiter, circuit breaker, bulkhead, retry.
+//!
+//! This crate provides configurable, in-memory implementations of common
+//! resilience patterns for async Rust services.
 
-// Suppress unused-crate-dependencies for stub modules.
-use parking_lot as _;
-use tokio as _;
-use tracing as _;
+pub mod config;
+pub mod duration_serde;
+pub mod error;
+pub mod traits;
 
-/// Token-bucket and sliding-window rate limiters.
-pub mod rate_limiter;
-/// Circuit breaker for failing downstream calls.
-pub mod circuit_breaker;
-/// Bulkhead pattern for concurrency isolation.
-pub mod bulkhead;
+mod bulkhead;
+mod circuit_breaker;
+mod rate_limiter;
+mod retry;
+
+// Re-export config types at crate root for convenience.
+pub use config::{BulkheadConfig, CircuitBreakerConfig, RateLimitConfig, RetryConfig};
+pub use error::Limit3rError;
+
+// Re-export trait definitions at crate root.
+pub use traits::{Bulkhead, CircuitBreaker, RateLimiter, RetryExecutor};
+
+// Re-export concrete implementations at crate root.
+pub use bulkhead::InMemoryBulkhead;
+pub use circuit_breaker::InMemoryCircuitBreaker;
+pub use rate_limiter::InMemoryRateLimiter;
+pub use retry::TokioRetryExecutor;

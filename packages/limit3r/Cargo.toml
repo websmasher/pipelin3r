@@ -3,13 +3,15 @@ name = "limit3r"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Resilience patterns: rate limiter, circuit breaker, bulkhead"
+description = "Resilience patterns: rate limiter, circuit breaker, bulkhead, retry"
 license = "MIT"
 repository = "https://github.com/3jane/pipelin3r"
 keywords = ["rate-limiting", "circuit-breaker", "bulkhead", "resilience"]
 categories = ["concurrency", "network-programming"]
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
 tokio = { version = "1", features = ["time", "sync"] }
 tracing = "0.1"
 parking_lot = "0.12"

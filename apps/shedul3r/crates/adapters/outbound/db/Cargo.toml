@@ -10,8 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-domain-types = { path = "../../../domain/types" }
-repo = { path = "../../../ports/outbound/repo" }
+limit3r = { path = "../../../../../../packages/limit3r" }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
 parking_lot = { workspace = true }

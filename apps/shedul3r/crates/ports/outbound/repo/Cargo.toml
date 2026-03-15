@@ -11,3 +11,4 @@ workspace = true
 
 [dependencies]
 domain-types = { path = "../../../domain/types" }
+limit3r = { path = "../../../../../../packages/limit3r" }

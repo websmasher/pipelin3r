@@ -205,6 +205,7 @@ name = "commands"
 version = "0.2.0"
 dependencies = [
  "domain-types",
+ "limit3r",
  "repo",
  "serde_yaml",
  "tokio",
@@ -214,6 +215,7 @@ dependencies = [
 name = "domain-types"
 version = "0.2.0"
 dependencies = [
+ "limit3r",
  "serde",
  "thiserror",
 ]
@@ -404,6 +406,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 
 [[package]]
+name = "limit3r"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -567,6 +580,7 @@ name = "repo"
 version = "0.2.0"
 dependencies = [
  "domain-types",
+ "limit3r",
 ]
 
 [[package]]
@@ -705,9 +719,8 @@ dependencies = [
 name = "state"
 version = "0.2.0"
 dependencies = [
- "domain-types",
+ "limit3r",
  "parking_lot",
- "repo",
  "tokio",
  "tracing",
 ]
