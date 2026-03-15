@@ -104,17 +104,38 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
     ) -> Result<(), Limit3rError> {
         let mut map = self.state.write();
 
-        // Evict idle closed circuits when the map exceeds the size limit.
-        // All Closed keys are dropped — they can be re-created fresh on next access.
-        // Open and HalfOpen keys are kept since they are actively tracking failures.
-        if map.len() > MAX_TRACKED_KEYS {
-            map.retain(|_k, circuit| circuit.state != State::Closed);
-        }
-
+        // Ensure the current key exists before eviction so it is never
+        // a victim.
         let needs_insert = !map.contains_key(key);
         if needs_insert {
             let _prev = map.insert(key.to_owned(), CircuitState::new());
         }
+
+        // Evict when the map exceeds the size limit, but never evict the
+        // current key and never drop circuits that are accumulating failures.
+        if map.len() > MAX_TRACKED_KEYS {
+            // First pass: remove closed circuits with empty history (truly idle).
+            map.retain(|k, circuit| {
+                k == key || circuit.state != State::Closed || !circuit.results.is_empty()
+            });
+
+            // Second pass if still over: remove closed circuits with the
+            // fewest recorded results (least information loss).
+            if map.len() > MAX_TRACKED_KEYS {
+                let excess = map.len().saturating_sub(MAX_TRACKED_KEYS);
+                let mut closed_with_history: Vec<_> = map
+                    .iter()
+                    .filter(|(k, c)| k.as_str() != key && c.state == State::Closed)
+                    .map(|(k, c)| (k.clone(), c.results.len()))
+                    .collect();
+                // Evict those with fewest results first (least information loss).
+                closed_with_history.sort_by_key(|(_, len)| *len);
+                for (evict_key, _) in closed_with_history.into_iter().take(excess) {
+                    let _removed = map.remove(&evict_key);
+                }
+            }
+        }
+
         let Some(circuit) = map.get_mut(key) else {
             return Err(Limit3rError::CircuitOpen {
                 key: key.to_owned(),

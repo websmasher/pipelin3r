@@ -264,15 +264,16 @@ async fn poll_for_file(
     let effective_initial = initial_delay.min(max_duration);
     tokio::time::sleep(effective_initial).await;
     loop {
-        if start.elapsed() >= max_duration {
-            return Err(SdkError::PollTimeout {
-                elapsed: start.elapsed(),
-            });
+        let elapsed = start.elapsed();
+        if elapsed >= max_duration {
+            return Err(SdkError::PollTimeout { elapsed });
         }
         if file_path.exists() {
             return Ok(());
         }
-        tokio::time::sleep(interval).await;
+        let remaining = max_duration.saturating_sub(elapsed);
+        let sleep_time = interval.min(remaining);
+        tokio::time::sleep(sleep_time).await;
     }
 }
 

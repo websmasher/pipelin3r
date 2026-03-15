@@ -70,13 +70,6 @@ impl InMemoryBulkhead {
         // Slow path: write lock to insert or update
         let permits = usize::try_from(config.max_concurrent).unwrap_or(usize::MAX);
         let mut map = self.state.write();
-        // Evict keys with no outstanding permits when the map exceeds the size limit.
-        if map.len() > MAX_TRACKED_KEYS {
-            map.retain(|_k, entry| {
-                entry.semaphore.available_permits()
-                    < usize::try_from(entry.max_concurrent).unwrap_or(usize::MAX)
-            });
-        }
 
         let needs_insert = !map.contains_key(key);
         if needs_insert {
@@ -89,17 +82,29 @@ impl InMemoryBulkhead {
             );
         }
 
-        let Some(entry) = map.get_mut(key) else {
+        // Update config if it changed.
+        if let Some(entry) = map.get_mut(key) {
+            if entry.max_concurrent != config.max_concurrent {
+                entry.semaphore = Arc::new(Semaphore::new(permits));
+                entry.max_concurrent = config.max_concurrent;
+            }
+        }
+
+        // Evict idle keys (all permits available) when the map exceeds the
+        // size limit, but never evict the current key.
+        if map.len() > MAX_TRACKED_KEYS {
+            map.retain(|k, entry| {
+                k == key
+                    || entry.semaphore.available_permits()
+                        < usize::try_from(entry.max_concurrent).unwrap_or(usize::MAX)
+            });
+        }
+
+        let Some(entry) = map.get(key) else {
             // Defensive: we just inserted, this should never happen
             drop(map);
             return Arc::new(Semaphore::new(permits));
         };
-
-        // If config changed, replace the semaphore
-        if entry.max_concurrent != config.max_concurrent {
-            entry.semaphore = Arc::new(Semaphore::new(permits));
-            entry.max_concurrent = config.max_concurrent;
-        }
 
         let result = Arc::clone(&entry.semaphore);
         drop(map);

@@ -48,15 +48,6 @@ impl InMemoryRateLimiter {
     }
 }
 
-/// Remove keys whose time window has expired, keeping the map bounded.
-fn evict_expired_rate_limit_keys(
-    map: &mut StateMap,
-    config: &RateLimitConfig,
-    now: Instant,
-) {
-    map.retain(|_key, entry| now.duration_since(entry.window_start) < config.limit_refresh_period);
-}
-
 impl RateLimiter for InMemoryRateLimiter {
     async fn acquire_permission(
         &self,
@@ -74,24 +65,8 @@ impl RateLimiter for InMemoryRateLimiter {
                 let mut map = self.state.lock().await;
                 let now = Instant::now();
 
-                // Evict expired windows when the map exceeds the size limit.
-                if map.len() > MAX_TRACKED_KEYS {
-                    evict_expired_rate_limit_keys(&mut map, config, now);
-                }
-
-                // If still over limit after evicting expired, remove oldest entries.
-                if map.len() > MAX_TRACKED_KEYS {
-                    let excess = map.len().saturating_sub(MAX_TRACKED_KEYS);
-                    let mut entries: Vec<_> = map
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.window_start))
-                        .collect();
-                    entries.sort_by_key(|(_, start)| *start);
-                    for (evict_key, _) in entries.into_iter().take(excess) {
-                        let _removed = map.remove(&evict_key);
-                    }
-                }
-
+                // Ensure the current key exists before eviction so it
+                // is never a victim.
                 let needs_insert = !map.contains_key(key);
                 if needs_insert {
                     let _prev = map.insert(
@@ -101,6 +76,31 @@ impl RateLimiter for InMemoryRateLimiter {
                             window_start: now,
                         },
                     );
+                }
+
+                // Evict expired windows when the map exceeds the size limit,
+                // but never evict the current key.
+                if map.len() > MAX_TRACKED_KEYS {
+                    map.retain(|k, state| {
+                        k == key
+                            || now.duration_since(state.window_start)
+                                < config.limit_refresh_period
+                    });
+                }
+
+                // If still over limit after evicting expired, remove oldest
+                // entries excluding the current key.
+                if map.len() > MAX_TRACKED_KEYS {
+                    let excess = map.len().saturating_sub(MAX_TRACKED_KEYS);
+                    let mut candidates: Vec<_> = map
+                        .iter()
+                        .filter(|(k, _)| k.as_str() != key)
+                        .map(|(k, v)| (k.clone(), v.window_start))
+                        .collect();
+                    candidates.sort_by_key(|(_, start)| *start);
+                    for (evict_key, _) in candidates.into_iter().take(excess) {
+                        let _removed = map.remove(&evict_key);
+                    }
                 }
 
                 let Some(entry) = map.get_mut(key) else {
