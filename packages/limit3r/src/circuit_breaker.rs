@@ -105,10 +105,10 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
         let mut map = self.state.write();
 
         // Evict idle closed circuits when the map exceeds the size limit.
+        // All Closed keys are dropped — they can be re-created fresh on next access.
+        // Open and HalfOpen keys are kept since they are actively tracking failures.
         if map.len() > MAX_TRACKED_KEYS {
-            map.retain(|_k, circuit| {
-                !(circuit.state == State::Closed && circuit.results.is_empty())
-            });
+            map.retain(|_k, circuit| circuit.state != State::Closed);
         }
 
         let needs_insert = !map.contains_key(key);

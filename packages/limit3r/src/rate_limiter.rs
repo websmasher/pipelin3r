@@ -79,6 +79,19 @@ impl RateLimiter for InMemoryRateLimiter {
                     evict_expired_rate_limit_keys(&mut map, config, now);
                 }
 
+                // If still over limit after evicting expired, remove oldest entries.
+                if map.len() > MAX_TRACKED_KEYS {
+                    let excess = map.len().saturating_sub(MAX_TRACKED_KEYS);
+                    let mut entries: Vec<_> = map
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.window_start))
+                        .collect();
+                    entries.sort_by_key(|(_, start)| *start);
+                    for (evict_key, _) in entries.into_iter().take(excess) {
+                        let _removed = map.remove(&evict_key);
+                    }
+                }
+
                 let needs_insert = !map.contains_key(key);
                 if needs_insert {
                     let _prev = map.insert(

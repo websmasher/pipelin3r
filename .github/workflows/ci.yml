@@ -47,6 +47,23 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  version-sync:
+    name: Version sync check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shedul3r version sync
+        run: |
+          SERVER_VERSION=$(grep -m1 '^version' apps/shedul3r/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          STUB_VERSION=$(grep -m1 '^version' packages/shedul3r-bin/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$SERVER_VERSION" != "$STUB_VERSION" ]; then
+            echo "ERROR: shedul3r version mismatch!"
+            echo "  Server: $SERVER_VERSION (apps/shedul3r/Cargo.toml)"
+            echo "  Stub:   $STUB_VERSION (packages/shedul3r-bin/Cargo.toml)"
+            exit 1
+          fi
+          echo "OK: both at $SERVER_VERSION"
+
   golden-tests:
     name: Golden Tests
     runs-on: ubuntu-latest

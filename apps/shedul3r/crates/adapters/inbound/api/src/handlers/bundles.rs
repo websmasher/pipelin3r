@@ -27,7 +27,10 @@ use crate::state::AppState;
 const MAX_FILES_PER_BUNDLE: usize = 100;
 
 /// Maximum size of a single file field in bytes (10 MB).
-const MAX_FIELD_SIZE: usize = 10_000_000;
+const MAX_FIELD_SIZE: u64 = 10_000_000;
+
+/// Maximum total size of all files in a single bundle upload (100 MB).
+const MAX_TOTAL_BUNDLE_SIZE: u64 = 100_000_000;
 
 /// Validate that a bundle path contains only normal components.
 ///
@@ -71,8 +74,9 @@ async fn upload(
 
     let base = temp_dir.path().to_path_buf();
     let mut file_count: usize = 0;
+    let mut total_size: u64 = 0;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(format!("multipart read error: {e}")))?
@@ -103,21 +107,35 @@ async fn upload(
                 .map_err(|e| AppError::Internal(format!("failed to create dirs: {e}")))?;
         }
 
-        let bytes = field
-            .bytes()
+        // Stream the field to disk, checking size limits incrementally.
+        let mut file = tokio::fs::File::create(&file_path)
             .await
-            .map_err(|e| AppError::BadRequest(format!("failed to read field bytes: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("failed to create file: {e}")))?;
+        let mut file_size: u64 = 0;
 
-        if bytes.len() > MAX_FIELD_SIZE {
-            return Err(AppError::BadRequest(format!(
-                "field too large: {} bytes exceeds {MAX_FIELD_SIZE} byte limit",
-                bytes.len()
-            )));
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("failed to read field chunk: {e}")))?
+        {
+            let chunk_len =
+                u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+            file_size = file_size.saturating_add(chunk_len);
+            total_size = total_size.saturating_add(chunk_len);
+            if file_size > MAX_FIELD_SIZE {
+                return Err(AppError::BadRequest(
+                    "file exceeds 10MB limit".to_owned(),
+                ));
+            }
+            if total_size > MAX_TOTAL_BUNDLE_SIZE {
+                return Err(AppError::BadRequest(
+                    "bundle exceeds 100MB total limit".to_owned(),
+                ));
+            }
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(|e| AppError::Internal(format!("failed to write file: {e}")))?;
         }
-
-        tokio::fs::write(&file_path, &bytes)
-            .await
-            .map_err(|e| AppError::Internal(format!("failed to write file: {e}")))?;
     }
 
     let bundle_id = uuid::Uuid::new_v4().to_string();

@@ -213,7 +213,6 @@ impl<'a> AgentBuilder<'a> {
     ///
     /// # Errors
     /// Returns an error if task YAML building fails or the SDK call fails.
-    #[allow(clippy::too_many_lines)] // reason: splitting this further would hurt readability
     pub async fn execute(self) -> Result<AgentResult, PipelineError> {
         let model_str = self.resolve_model_string();
         let timeout_str = self.timeout.map(format_duration);
@@ -253,92 +252,18 @@ impl<'a> AgentBuilder<'a> {
             );
         }
 
-        // Remote bundle upload (when remote mode is enabled and a bundle is present).
-        let bundle_handle = if self.executor.is_remote() {
-            if let Some(ref bundle) = self.bundle_data {
-                let file_refs: Vec<(&str, &[u8])> = bundle
-                    .files()
-                    .iter()
-                    .map(|(name, content)| (name.as_str(), content.as_slice()))
-                    .collect();
-                Some(
-                    self.executor
-                        .sdk_client()
-                        .upload_bundle(&file_refs)
-                        .await?,
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Use remote path as working directory when a bundle was uploaded.
-        let working_directory = if let Some(ref handle) = bundle_handle {
-            Some(handle.remote_path.clone())
-        } else {
-            self.working_dir.as_ref().map(|p| p.display().to_string())
-        };
-
-        // Real execution via SDK.
-        let payload = TaskPayload {
-            task: task_yaml,
-            input: prompt,
-            working_directory,
-            environment: env,
-        };
-
-        // Wrap remote execution in a block that always cleans up the bundle.
-        let execution_result = async {
-            let result = if let Some(expected) = &self.expected_output {
-                self.executor
-                    .sdk_client()
-                    .submit_task_with_recovery(&payload, expected)
-                    .await?
-            } else {
-                self.executor.sdk_client().submit_task(&payload).await?
-            };
-
-            // Download expected outputs from remote bundle.
-            if let Some(ref handle) = bundle_handle {
-                if let Some(ref bundle) = self.bundle_data {
-                    for output_path in bundle.expected_output_paths() {
-                        let bytes = self
-                            .executor
-                            .sdk_client()
-                            .download_file(&handle.id, output_path)
-                            .await?;
-
-                        // Write downloaded file to the local working directory or temp.
-                        let local_dir = self
-                            .working_dir
-                            .as_deref()
-                            .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
-                        let local_path = local_dir.join(output_path);
-                        if let Some(parent) = local_path.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        std::fs::write(&local_path, &bytes)?;
-                    }
-                }
-            }
-
-            Ok::<AgentResult, PipelineError>(AgentResult {
-                success: result.success,
-                output: result.output,
-            })
-        }
-        .await;
-
-        // Always clean up remote bundle, regardless of success/failure.
-        if let Some(ref handle) = bundle_handle {
-            if let Err(e) = self.executor.sdk_client().delete_bundle(&handle.id).await {
-                tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
-            }
-        }
-
-        execution_result
+        // Execute via the shared remote bundle helper.
+        execute_remote_bundle(
+            self.executor.sdk_client(),
+            self.executor.is_remote(),
+            self.bundle_data.as_ref(),
+            &task_yaml,
+            &prompt,
+            self.working_dir.as_deref(),
+            self.expected_output.as_deref(),
+            env,
+        )
+        .await
     }
 }
 
@@ -555,6 +480,98 @@ fn execute_batch_task_dry_run(
     )
 }
 
+/// Execute a remote bundle workflow: upload, submit, download outputs, cleanup.
+///
+/// Shared by both [`AgentBuilder::execute`] and [`execute_single_task`] to avoid
+/// duplicating the upload/submit/download/cleanup sequence.
+#[allow(clippy::too_many_arguments)] // reason: flat param list avoids an intermediate struct for a private helper
+async fn execute_remote_bundle(
+    client: &shedul3r_rs_sdk::Client,
+    remote: bool,
+    bundle: Option<&Bundle>,
+    task_yaml: &str,
+    prompt: &str,
+    working_dir: Option<&Path>,
+    expected_output: Option<&Path>,
+    env: Option<BTreeMap<String, String>>,
+) -> Result<AgentResult, PipelineError> {
+    // Upload bundle when remote mode is enabled and a bundle is present.
+    let bundle_handle = if remote {
+        if let Some(bundle) = bundle {
+            let file_refs: Vec<(&str, &[u8])> = bundle
+                .files()
+                .iter()
+                .map(|(name, content)| (name.as_str(), content.as_slice()))
+                .collect();
+            Some(client.upload_bundle(&file_refs).await?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Use remote path as working directory when a bundle was uploaded.
+    let working_directory = if let Some(ref handle) = bundle_handle {
+        Some(handle.remote_path.clone())
+    } else {
+        working_dir.map(|p| p.display().to_string())
+    };
+
+    let payload = TaskPayload {
+        task: String::from(task_yaml),
+        input: String::from(prompt),
+        working_directory,
+        environment: env,
+    };
+
+    // Wrap execution in a block that always cleans up the bundle.
+    let execution_result = async {
+        let result = if let Some(expected) = expected_output {
+            client
+                .submit_task_with_recovery(&payload, expected)
+                .await?
+        } else {
+            client.submit_task(&payload).await?
+        };
+
+        // Download expected outputs from remote bundle.
+        if let Some(ref handle) = bundle_handle {
+            if let Some(bundle) = bundle {
+                for output_path in bundle.expected_output_paths() {
+                    let bytes = client
+                        .download_file(&handle.id, output_path)
+                        .await?;
+
+                    // Write downloaded file to the local working directory or temp.
+                    let local_dir = working_dir
+                        .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
+                    let local_path = local_dir.join(output_path);
+                    if let Some(parent) = local_path.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    tokio::fs::write(&local_path, &bytes).await?;
+                }
+            }
+        }
+
+        Ok::<AgentResult, PipelineError>(AgentResult {
+            success: result.success,
+            output: result.output,
+        })
+    }
+    .await;
+
+    // Always clean up remote bundle, regardless of success/failure.
+    if let Some(ref handle) = bundle_handle {
+        if let Err(e) = client.delete_bundle(&handle.id).await {
+            tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
+        }
+    }
+
+    execution_result
+}
+
 /// Execute a single task via the SDK client, with bundle cleanup on failure.
 async fn execute_single_task(
     task: &AgentTask,
@@ -587,77 +604,18 @@ async fn execute_single_task(
 
     let env = merge_env(auth_env, None);
 
-    // Remote bundle upload when enabled.
-    let bundle_handle = if remote {
-        if let Some(ref bundle) = task.bundle_data {
-            let file_refs: Vec<(&str, &[u8])> = bundle
-                .files()
-                .iter()
-                .map(|(name, content)| (name.as_str(), content.as_slice()))
-                .collect();
-            Some(client.upload_bundle(&file_refs).await?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let working_directory = if let Some(ref handle) = bundle_handle {
-        Some(handle.remote_path.clone())
-    } else {
-        task.working_dir.as_ref().map(|p| p.display().to_string())
-    };
-
-    let payload = TaskPayload {
-        task: task_yaml,
-        input: prompt.clone(),
-        working_directory,
-        environment: env,
-    };
-
-    // Wrap execution in a block that always cleans up the bundle.
-    let execution_result = async {
-        let result = if let Some(expected) = &task.expected_output {
-            client.submit_task_with_recovery(&payload, expected).await?
-        } else {
-            client.submit_task(&payload).await?
-        };
-
-        // Download expected outputs from remote bundle.
-        if let Some(ref handle) = bundle_handle {
-            if let Some(ref bundle) = task.bundle_data {
-                for output_path in bundle.expected_output_paths() {
-                    let bytes = client.download_file(&handle.id, output_path).await?;
-
-                    let local_dir = task
-                        .working_dir
-                        .clone()
-                        .unwrap_or_else(std::env::temp_dir);
-                    let local_path = local_dir.join(output_path);
-                    if let Some(parent) = local_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&local_path, &bytes)?;
-                }
-            }
-        }
-
-        Ok::<AgentResult, PipelineError>(AgentResult {
-            success: result.success,
-            output: result.output,
-        })
-    }
-    .await;
-
-    // Always clean up remote bundle, regardless of success/failure.
-    if let Some(ref handle) = bundle_handle {
-        if let Err(e) = client.delete_bundle(&handle.id).await {
-            tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
-        }
-    }
-
-    execution_result
+    // Execute via the shared remote bundle helper.
+    execute_remote_bundle(
+        client,
+        remote,
+        task.bundle_data.as_ref(),
+        &task_yaml,
+        prompt,
+        task.working_dir.as_deref(),
+        task.expected_output.as_deref(),
+        env,
+    )
+    .await
 }
 
 /// Format a `Duration` as a human-readable timeout string for task YAML.

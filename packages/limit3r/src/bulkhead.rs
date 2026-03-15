@@ -70,6 +70,14 @@ impl InMemoryBulkhead {
         // Slow path: write lock to insert or update
         let permits = usize::try_from(config.max_concurrent).unwrap_or(usize::MAX);
         let mut map = self.state.write();
+        // Evict keys with no outstanding permits when the map exceeds the size limit.
+        if map.len() > MAX_TRACKED_KEYS {
+            map.retain(|_k, entry| {
+                entry.semaphore.available_permits()
+                    < usize::try_from(entry.max_concurrent).unwrap_or(usize::MAX)
+            });
+        }
+
         let needs_insert = !map.contains_key(key);
         if needs_insert {
             let _prev = map.insert(
@@ -101,19 +109,6 @@ impl InMemoryBulkhead {
 
 impl Bulkhead for InMemoryBulkhead {
     async fn acquire(&self, key: &str, config: &BulkheadConfig) -> Result<(), Limit3rError> {
-        // Evict keys with no outstanding permits when the map exceeds the size limit.
-        {
-            let map = self.state.read();
-            if map.len() > MAX_TRACKED_KEYS {
-                drop(map);
-                let mut map = self.state.write();
-                map.retain(|_k, entry| {
-                    entry.semaphore.available_permits()
-                        < usize::try_from(entry.max_concurrent).unwrap_or(usize::MAX)
-                });
-            }
-        }
-
         let semaphore = self.get_or_create_semaphore(key, config);
 
         let result = tokio::time::timeout(config.max_wait_duration, semaphore.acquire()).await;

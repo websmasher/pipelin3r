@@ -107,7 +107,7 @@ impl RetryConfig {
         if self.max_attempts == 0 {
             return Err("max_attempts must be greater than 0".to_owned());
         }
-        if self.backoff_multiplier <= 0.0 || self.backoff_multiplier.is_nan() {
+        if !self.backoff_multiplier.is_finite() || self.backoff_multiplier <= 0.0 {
             return Err("backoff_multiplier must be a positive finite number".to_owned());
         }
         Ok(())

@@ -261,14 +261,16 @@ async fn poll_for_file(
     max_duration: Duration,
 ) -> Result<(), SdkError> {
     let start = tokio::time::Instant::now();
-    tokio::time::sleep(initial_delay).await;
+    let effective_initial = initial_delay.min(max_duration);
+    tokio::time::sleep(effective_initial).await;
     loop {
+        if start.elapsed() >= max_duration {
+            return Err(SdkError::PollTimeout {
+                elapsed: start.elapsed(),
+            });
+        }
         if file_path.exists() {
             return Ok(());
-        }
-        let elapsed = start.elapsed();
-        if elapsed >= max_duration {
-            return Err(SdkError::PollTimeout { elapsed });
         }
         tokio::time::sleep(interval).await;
     }
