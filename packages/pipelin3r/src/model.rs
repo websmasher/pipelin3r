@@ -6,6 +6,46 @@ use std::path::Path;
 /// Embedded default model configuration, compiled from `models.toml`.
 const DEFAULT_MODELS_TOML: &str = include_str!("../models.toml");
 
+/// Tool available to an agent during invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tool {
+    /// File reading tool.
+    Read,
+    /// File writing tool.
+    Write,
+    /// Content search (grep) tool.
+    Grep,
+    /// File pattern matching (glob) tool.
+    Glob,
+    /// Web search tool.
+    WebSearch,
+    /// Web page fetch tool.
+    WebFetch,
+    /// Custom tool name (passed through as-is).
+    Custom(String),
+}
+
+impl Tool {
+    /// Get the tool name string used in the CLI `--allowedTools` flag.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Read => "Read",
+            Self::Write => "Write",
+            Self::Grep => "Grep",
+            Self::Glob => "Glob",
+            Self::WebSearch => "WebSearch",
+            Self::WebFetch => "WebFetch",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for Tool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// LLM model selection.
 #[derive(Debug, Clone)]
 pub enum Model {
@@ -152,6 +192,40 @@ impl ModelConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Tool enum tests ---
+
+    #[test]
+    fn tool_as_str_known_variants() {
+        assert_eq!(Tool::Read.as_str(), "Read", "Read tool name");
+        assert_eq!(Tool::Write.as_str(), "Write", "Write tool name");
+        assert_eq!(Tool::Grep.as_str(), "Grep", "Grep tool name");
+        assert_eq!(Tool::Glob.as_str(), "Glob", "Glob tool name");
+        assert_eq!(Tool::WebSearch.as_str(), "WebSearch", "WebSearch tool name");
+        assert_eq!(Tool::WebFetch.as_str(), "WebFetch", "WebFetch tool name");
+    }
+
+    #[test]
+    fn tool_as_str_custom() {
+        let tool = Tool::Custom(String::from("MyCustomTool"));
+        assert_eq!(
+            tool.as_str(),
+            "MyCustomTool",
+            "Custom tool should pass through"
+        );
+    }
+
+    #[test]
+    fn tool_display() {
+        assert_eq!(format!("{}", Tool::Read), "Read", "Display for Read");
+        assert_eq!(
+            format!("{}", Tool::Custom(String::from("X"))),
+            "X",
+            "Display for Custom"
+        );
+    }
+
+    // --- Model tests ---
 
     #[test]
     fn anthropic_opus() {

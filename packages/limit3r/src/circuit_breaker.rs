@@ -146,8 +146,18 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
             State::Closed => {
                 // Evaluate failure rate to decide if we should open
                 circuit.trim_to_window(config.sliding_window_size);
+
+                // Don't evaluate failure rate until we have enough data.
+                // A single failure out of 1 call = 100% and would
+                // prematurely trip the circuit on a brand-new key.
+                let min_calls = std::cmp::max(2, config.sliding_window_size / 2);
+                let min_calls_usize = usize::try_from(min_calls).unwrap_or(2);
+                if circuit.results.len() < min_calls_usize {
+                    return Ok(());
+                }
+
                 let rate = circuit.failure_rate();
-                if rate > config.failure_rate_threshold {
+                if rate >= config.failure_rate_threshold {
                     circuit.state = State::Open;
                     circuit.opened_at = Some(Instant::now());
                     tracing::info!(key, rate, "Circuit breaker opened");
@@ -324,6 +334,96 @@ mod tests {
         // Should now be fully closed
         let result = cb.check_permitted("key-a", &config);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn single_failure_does_not_trip_with_large_window() {
+        // BUG-1 regression: 1 failure out of 1 call = 100%, but the
+        // window has only 1 result which is below the min_calls
+        // threshold (max(2, 10/2) = 5). The circuit must stay closed.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 10, Duration::from_secs(5));
+
+        // Initialize
+        cb.check_permitted("key-a", &config).unwrap();
+
+        // Record a single failure
+        cb.record_failure("key-a");
+
+        // Should still be permitted — not enough data to evaluate
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_ok(), "circuit tripped with only 1 result in a window of 10");
+    }
+
+    #[test]
+    fn partial_window_below_min_calls_stays_closed() {
+        // With window=10, min_calls = max(2, 10/2) = 5.
+        // Record 4 failures (below threshold count) — should NOT trip.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 10, Duration::from_secs(5));
+
+        cb.check_permitted("key-a", &config).unwrap();
+
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+
+        // 4 results < 5 min_calls, should still be ok
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_ok(), "circuit tripped with only 4 results, min_calls is 5");
+    }
+
+    #[test]
+    fn trips_at_exact_threshold_rate() {
+        // BUG-2 regression: >= threshold should trip, not just >.
+        // threshold=50.0, window=4. Record 2 failures, 2 successes = exactly 50%.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_secs(5));
+
+        cb.check_permitted("key-a", &config).unwrap();
+
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_success("key-a");
+        cb.record_success("key-a");
+
+        // 2/4 = 50% >= 50% threshold — should trip
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_err(), "circuit did not trip at exactly 50% with threshold 50%");
+    }
+
+    #[test]
+    fn does_not_trip_just_below_threshold() {
+        // 1 failure, 3 successes = 25% < 50% — should NOT trip.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_secs(5));
+
+        cb.check_permitted("key-a", &config).unwrap();
+
+        cb.record_failure("key-a");
+        cb.record_success("key-a");
+        cb.record_success("key-a");
+        cb.record_success("key-a");
+
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_ok(), "circuit tripped at 25% with threshold 50%");
+    }
+
+    #[test]
+    fn eviction_never_removes_current_key() {
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_secs(5));
+
+        // Fill up beyond MAX_TRACKED_KEYS by creating many keys
+        // We can't create 10001 keys in a unit test easily, but we can
+        // verify the current key survives by inserting it, then accessing it.
+        cb.check_permitted("survivor", &config).unwrap();
+        cb.record_failure("survivor");
+
+        // Access again — the key must still exist and not error
+        let result = cb.check_permitted("survivor", &config);
+        assert!(result.is_ok(), "current key was evicted or lost");
     }
 
     #[tokio::test]

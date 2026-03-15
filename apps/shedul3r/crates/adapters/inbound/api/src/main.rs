@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{Json, routing::get};
+use axum::{Json, middleware, routing::get};
 use clap::Parser;
 use tokio::net::TcpListener;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -42,6 +42,12 @@ fn run_server(port_override: Option<u16>) {
     rt.block_on(async { serve(port_override).await });
 }
 
+/// Maximum request body size for task endpoints (50 MB).
+const TASK_BODY_LIMIT: usize = 50_000_000;
+
+/// Maximum request body size for bundle uploads (100 MB).
+const BUNDLE_BODY_LIMIT: usize = 100_000_000;
+
 /// Async server setup and run loop.
 async fn serve(port_override: Option<u16>) {
     // Initialize structured logging.
@@ -67,12 +73,14 @@ async fn serve(port_override: Option<u16>) {
 
     let state = build_app_state();
 
-    let app = task_router()
-        .merge(bundle_router())
+    // Per-route body limits: task endpoints get 50MB, bundle upload gets 100MB.
+    let mut app = task_router()
+        .layer(DefaultBodyLimit::max(TASK_BODY_LIMIT))
+        .merge(
+            bundle_router().layer(DefaultBodyLimit::max(BUNDLE_BODY_LIMIT)),
+        )
         .route("/health", get(health))
         .with_state(Arc::clone(&state))
-        // Limit total request body to 50 MB for all endpoints.
-        .layer(DefaultBodyLimit::max(50_000_000))
         // Panic-to-HTTP conversion — prevents raw panic messages leaking to clients
         .layer(CatchPanicLayer::custom(|_| {
             let body = serde_json::json!({
@@ -81,6 +89,19 @@ async fn serve(port_override: Option<u16>) {
             });
             (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
         }));
+
+    // Optional API key authentication: if SHEDUL3R_API_KEY is set, require
+    // Bearer token on all requests.
+    #[allow(clippy::disallowed_methods)] // Startup: env var reading is confined to main()
+    if let Ok(key) = std::env::var("SHEDUL3R_API_KEY") {
+        tracing::info!("API key authentication enabled");
+        app = app.layer(middleware::from_fn(move |req, next| {
+            let k = key.clone();
+            api::auth::check_api_key(req, next, k)
+        }));
+    } else {
+        tracing::warn!("SHEDUL3R_API_KEY not set — running without authentication");
+    }
 
     #[allow(clippy::expect_used)] // Startup: binding failure is unrecoverable
     let listener = TcpListener::bind(&addr)

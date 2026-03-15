@@ -26,8 +26,7 @@ async fn agent_dry_run_creates_capture_files() {
         .with_dry_run(capture_dir.clone());
 
     // Build a prompt from a template.
-    let mut template_filler = TemplateFiller::new();
-    let _ = template_filler.set("{{PACKAGE}}", "my-parser");
+    let template_filler = TemplateFiller::new().set("{{PACKAGE}}", "my-parser");
     let prompt_text = template_filler.fill("Implement tests for {{PACKAGE}}");
 
     let expected_output = dir.path().join("output").join("tests.rs");

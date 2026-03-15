@@ -1,15 +1,20 @@
-//! Two-phase template filler with injection protection.
+//! Single-pass template filler with injection protection.
 //!
-//! Simple replacements (names, counts) are applied first, then content
-//! replacements (large blobs) are applied in a single pass to prevent
-//! template injection if their content contains `{{PLACEHOLDER}}` strings.
+//! All replacements (simple and content) are applied in a single pass so that
+//! no replacement value is ever scanned for placeholders, preventing template
+//! injection regardless of value contents.
 
-/// Two-phase template filler.
+use std::path::Path;
+
+use crate::error::PipelineError;
+
+/// Single-pass template filler.
 ///
-/// Use [`set`](Self::set) for short, safe values (applied first) and
+/// Use [`set`](Self::set) for short, safe values (names, counts) and
 /// [`set_content`](Self::set_content) for large blobs that might contain
-/// placeholder-like strings (applied last, in a single pass so they
-/// cannot inject into each other).
+/// placeholder-like strings. Both are applied in a single pass: all
+/// placeholder positions are located first, then replaced simultaneously
+/// so no replacement value can inject into another.
 pub struct TemplateFiller {
     replacements: Vec<(String, String)>,
     content_replacements: Vec<(String, String)>,
@@ -24,18 +29,30 @@ impl TemplateFiller {
         }
     }
 
+    /// Load a template from a file path.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read.
+    pub fn from_file(path: &Path) -> Result<String, PipelineError> {
+        std::fs::read_to_string(path).map_err(|e| {
+            PipelineError::Template(format!(
+                "failed to read template {}: {e}",
+                path.display()
+            ))
+        })
+    }
+
     /// Add a simple replacement (short strings like names, counts).
-    /// These are applied first.
-    pub fn set(&mut self, key: &str, value: &str) -> &mut Self {
+    #[must_use]
+    pub fn set(mut self, key: &str, value: &str) -> Self {
         self.replacements
             .push((String::from(key), String::from(value)));
         self
     }
 
     /// Add a content replacement (large blobs like architecture docs, test cases).
-    /// These are applied in a single pass to prevent template injection if their
-    /// content contains `{{PLACEHOLDER}}` strings.
-    pub fn set_content(&mut self, key: &str, value: &str) -> &mut Self {
+    #[must_use]
+    pub fn set_content(mut self, key: &str, value: &str) -> Self {
         self.content_replacements
             .push((String::from(key), String::from(value)));
         self
@@ -43,25 +60,25 @@ impl TemplateFiller {
 
     /// Apply all replacements and return the filled template.
     ///
-    /// Simple replacements are applied first (sequentially). Content
-    /// replacements are then applied in a single pass: all placeholder
-    /// positions are located first, then replaced from end to start so that
-    /// byte offsets remain valid and no replacement value is scanned by
-    /// subsequent replacements.
+    /// All replacements (simple and content) are applied in a single pass:
+    /// all placeholder positions are located first, then replaced from end
+    /// to start so that byte offsets remain valid and no replacement value
+    /// is scanned by subsequent replacements. This prevents injection even
+    /// if a simple replacement value contains another placeholder string.
     pub fn fill(&self, template: &str) -> String {
-        let mut result = String::from(template);
+        // Combine simple + content replacements into a single list.
+        let all: Vec<(String, String)> = self
+            .replacements
+            .iter()
+            .chain(self.content_replacements.iter())
+            .cloned()
+            .collect();
 
-        // Phase 1: simple replacements (sequential is fine — values are short/safe).
-        for (key, value) in &self.replacements {
-            result = result.replace(key.as_str(), value.as_str());
+        if all.is_empty() {
+            return String::from(template);
         }
 
-        // Phase 2: content replacements — single-pass, reverse-offset.
-        if !self.content_replacements.is_empty() {
-            result = single_pass_replace(&result, &self.content_replacements);
-        }
-
-        result
+        single_pass_replace(template, &all)
     }
 }
 
@@ -145,8 +162,7 @@ mod tests {
 
     #[test]
     fn fills_simple_and_content_replacements() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler
+        let filler = TemplateFiller::new()
             .set("{{PACKAGE}}", "my-parser")
             .set("{{COUNT}}", "5")
             .set_content("{{ARCHITECTURE}}", "The system uses modular design.");
@@ -162,12 +178,12 @@ mod tests {
 
     #[test]
     fn content_applied_last_prevents_injection() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler.set("{{FILENAME}}", "parser.rs");
-        let _ = filler.set_content(
-            "{{TEST_CASES}}",
-            "Test that {{FILENAME}} handles edge cases",
-        );
+        let filler = TemplateFiller::new()
+            .set("{{FILENAME}}", "parser.rs")
+            .set_content(
+                "{{TEST_CASES}}",
+                "Test that {{FILENAME}} handles edge cases",
+            );
 
         let template = "File: {{FILENAME}}\nCases: {{TEST_CASES}}";
         let result = filler.fill(template);
@@ -180,8 +196,7 @@ mod tests {
 
     #[test]
     fn content_into_content_replacement_order() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler
+        let filler = TemplateFiller::new()
             .set_content("{{A}}", "contains {{B}} reference")
             .set_content("{{B}}", "injected");
 
@@ -191,6 +206,21 @@ mod tests {
         assert_eq!(
             result, "First: contains {{B}} reference, Second: injected",
             "content replacements must not inject into each other"
+        );
+    }
+
+    #[test]
+    fn simple_into_simple_no_cross_injection() {
+        let filler = TemplateFiller::new()
+            .set("{{A}}", "contains {{B}} reference")
+            .set("{{B}}", "injected");
+
+        let template = "First: {{A}}, Second: {{B}}";
+        let result = filler.fill(template);
+
+        assert_eq!(
+            result, "First: contains {{B}} reference, Second: injected",
+            "simple replacements must not inject into each other (single-pass)"
         );
     }
 
@@ -207,8 +237,7 @@ mod tests {
 
     #[test]
     fn multiple_occurrences_of_same_content_key() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler.set_content("{{X}}", "replaced");
+        let filler = TemplateFiller::new().set_content("{{X}}", "replaced");
 
         let template = "a {{X}} b {{X}} c";
         let result = filler.fill(template);
@@ -216,6 +245,28 @@ mod tests {
         assert_eq!(
             result, "a replaced b replaced c",
             "all occurrences of the same content key should be replaced"
+        );
+    }
+
+    #[test]
+    fn from_file_nonexistent() {
+        let result = TemplateFiller::from_file(std::path::Path::new("/nonexistent/template.md"));
+        assert!(result.is_err(), "should fail on nonexistent file");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertion with tempdir
+    fn from_file_reads_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("template.txt");
+        std::fs::write(&path, "Hello {{NAME}}").unwrap();
+
+        let content = TemplateFiller::from_file(&path);
+        assert!(content.is_ok(), "should read existing file");
+        let content = content.unwrap_or_default();
+        assert_eq!(
+            content, "Hello {{NAME}}",
+            "should return file content"
         );
     }
 }

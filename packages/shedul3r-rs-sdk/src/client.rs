@@ -60,6 +60,12 @@ pub struct TaskPayload {
     /// Optional environment variables to inject.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<BTreeMap<String, String>>,
+    /// Optional limiter key override (overrides the key from the task YAML).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limiter_key: Option<String>,
+    /// Optional per-task timeout override in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Response from shedul3r after task completion.
@@ -69,6 +75,30 @@ pub struct TaskResult {
     pub success: bool,
     /// Task output text (or error message on failure).
     pub output: String,
+    /// Process exit code, if available.
+    pub exit_code: Option<i32>,
+    /// Wall-clock elapsed time as reported by the server.
+    pub elapsed: Option<String>,
+    /// ISO-8601 timestamp when execution started.
+    pub started_at: Option<String>,
+}
+
+impl TaskResult {
+    /// Require the task to have succeeded, returning `Err(SdkError::TaskFailed)`
+    /// if it did not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError::TaskFailed`] when `self.success` is `false`.
+    pub fn require_success(self) -> Result<Self, SdkError> {
+        if self.success {
+            Ok(self)
+        } else {
+            Err(SdkError::TaskFailed {
+                message: self.output,
+            })
+        }
+    }
 }
 
 /// Raw JSON response from the shedul3r API.
@@ -77,6 +107,36 @@ struct ApiResponse {
     success: Option<bool>,
     output: Option<String>,
     message: Option<String>,
+    metadata: Option<ApiResponseMetadata>,
+}
+
+/// Metadata nested inside [`ApiResponse`].
+#[derive(Deserialize)]
+struct ApiResponseMetadata {
+    started_at: Option<String>,
+    elapsed: Option<ApiElapsed>,
+    exit_code: Option<i32>,
+}
+
+/// The server serialises `Duration` as `{ secs, nanos }`.
+#[derive(Deserialize)]
+struct ApiElapsed {
+    secs: Option<u64>,
+    nanos: Option<u32>,
+}
+
+impl ApiElapsed {
+    /// Format the elapsed duration as a human-readable string.
+    fn to_display_string(&self) -> String {
+        let secs = self.secs.unwrap_or(0);
+        let nanos = self.nanos.unwrap_or(0);
+        if nanos == 0 {
+            format!("{secs}s")
+        } else {
+            let millis = nanos.saturating_div(1_000_000);
+            format!("{secs}.{millis:03}s")
+        }
+    }
 }
 
 impl Client {
@@ -115,8 +175,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error only for unrecoverable issues (e.g. serialisation
-    /// failure). HTTP failures are reported via [`TaskResult::success`] `= false`.
+    /// Returns [`SdkError::Http`] for network or HTTP failures.
+    /// Task-level failures (command exited non-zero) are returned as
+    /// `Ok(TaskResult { success: false, .. })`.
     pub async fn submit_task(&self, payload: &TaskPayload) -> Result<TaskResult, SdkError> {
         let url = format!("{}/api/tasks", self.config.base_url);
         http_call(&self.http, &url, payload, None).await
@@ -133,8 +194,8 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error only for unrecoverable issues. Transient failures
-    /// are reported via [`TaskResult::success`] `= false`.
+    /// Returns [`SdkError::Http`] for network failures (after checking file
+    /// recovery). Task-level failures are `Ok(TaskResult { success: false, .. })`.
     pub async fn submit_task_with_recovery(
         &self,
         payload: &TaskPayload,
@@ -162,6 +223,9 @@ impl Client {
                     Ok(()) => Ok(TaskResult {
                         success: true,
                         output: String::from("(recovered from file poll)"),
+                        exit_code: None,
+                        elapsed: None,
+                        started_at: None,
                     }),
                     Err(e) => {
                         // Poll failed — check if the file appeared anyway.
@@ -169,12 +233,12 @@ impl Client {
                             Ok(TaskResult {
                                 success: true,
                                 output: String::from("(recovered from file)"),
+                                exit_code: None,
+                                elapsed: None,
+                                started_at: None,
                             })
                         } else {
-                            Ok(TaskResult {
-                                success: false,
-                                output: format!("both HTTP and file poll failed: {e}"),
-                            })
+                            Err(e)
                         }
                     }
                 }
@@ -186,68 +250,83 @@ impl Client {
 // ── Internal helpers ────────────────────────────────────────────────
 
 /// Perform the actual HTTP POST and interpret the response.
+///
+/// Network and parse errors are propagated as `Err`, but only after checking
+/// whether the expected output file appeared on disk (file recovery).
+/// Task-level failures (server returned `success: false`) are returned as
+/// `Ok(TaskResult { success: false, .. })`.
 async fn http_call(
     http: &reqwest::Client,
     url: &str,
     payload: &TaskPayload,
     expected_output: Option<&Path>,
 ) -> Result<TaskResult, SdkError> {
-    let result = http.post(url).json(payload).send().await;
-
     let try_file_recovery = |expected: Option<&Path>| -> Option<TaskResult> {
         let path = expected?;
         if path.exists() {
             Some(TaskResult {
                 success: true,
                 output: String::from("(recovered from file)"),
+                exit_code: None,
+                elapsed: None,
+                started_at: None,
             })
         } else {
             None
         }
     };
 
-    let error_result = |err: &dyn std::fmt::Display, expected: Option<&Path>| -> TaskResult {
-        if let Some(recovered) = try_file_recovery(expected) {
-            return recovered;
-        }
-        let msg = err.to_string();
-        TaskResult {
-            success: false,
-            output: truncate_str(&msg, 500),
+    let resp = match http.post(url).json(payload).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(recovered) = try_file_recovery(expected_output) {
+                return Ok(recovered);
+            }
+            return Err(SdkError::Http(e));
         }
     };
 
-    match result {
-        Ok(resp) => {
-            let parsed = resp.json::<ApiResponse>().await;
-            match parsed {
-                Ok(response) => {
-                    if response.success == Some(true) {
-                        let output = response.output.unwrap_or_default().trim().to_owned();
-                        return Ok(TaskResult {
-                            success: true,
-                            output,
-                        });
-                    }
-
-                    if let Some(recovered) = try_file_recovery(expected_output) {
-                        return Ok(recovered);
-                    }
-
-                    let output = response
-                        .output
-                        .or(response.message)
-                        .unwrap_or_else(|| String::from("unknown error"));
-                    Ok(TaskResult {
-                        success: false,
-                        output,
-                    })
-                }
-                Err(err) => Ok(error_result(&err, expected_output)),
+    let response: ApiResponse = match resp.json::<ApiResponse>().await {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(recovered) = try_file_recovery(expected_output) {
+                return Ok(recovered);
             }
+            return Err(SdkError::Http(e));
         }
-        Err(err) => Ok(error_result(&err, expected_output)),
+    };
+
+    let meta = response.metadata.as_ref();
+    let exit_code = meta.and_then(|m| m.exit_code);
+    let elapsed = meta.and_then(|m| m.elapsed.as_ref().map(ApiElapsed::to_display_string));
+    let started_at = meta.and_then(|m| m.started_at.clone());
+
+    if response.success == Some(true) {
+        let output = response.output.unwrap_or_default().trim().to_owned();
+        return Ok(TaskResult {
+            success: true,
+            output,
+            exit_code,
+            elapsed,
+            started_at,
+        });
     }
+
+    if let Some(recovered) = try_file_recovery(expected_output) {
+        return Ok(recovered);
+    }
+
+    let output = response
+        .output
+        .or(response.message)
+        .unwrap_or_else(|| String::from("unknown error"));
+    Ok(TaskResult {
+        success: false,
+        output,
+        exit_code,
+        elapsed,
+        started_at,
+    })
 }
 
 /// Poll for a file to appear on disk, with an initial delay and a maximum duration.
@@ -397,5 +476,145 @@ mod tests {
         assert!(result.is_err(), "should timeout when file does not appear");
         let is_poll_timeout = matches!(result, Err(SdkError::PollTimeout { .. }));
         assert!(is_poll_timeout, "should be PollTimeout variant");
+    }
+
+    #[tokio::test]
+    async fn poll_for_file_succeeds_when_file_appears() {
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("output.txt");
+        let path_clone = path.clone();
+
+        // Spawn a task that creates the file after 100ms.
+        let _handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = std::fs::write(&path_clone, "done");
+        });
+
+        let result = poll_for_file(
+            &path,
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+            Duration::from_millis(500),
+        )
+        .await;
+
+        assert!(result.is_ok(), "should succeed when file appears during polling");
+    }
+
+    #[tokio::test]
+    async fn submit_task_returns_err_on_connection_refused() {
+        let config = ClientConfig {
+            base_url: String::from("http://127.0.0.1:19999"),
+            timeout: Duration::from_millis(500),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+
+        let payload = TaskPayload {
+            task: String::from("name: test\ncommand: echo"),
+            input: String::from("hello"),
+            working_directory: None,
+            environment: None,
+            limiter_key: None,
+            timeout_ms: None,
+        };
+        let result = client.submit_task(&payload).await;
+
+        assert!(result.is_err(), "network failure should return Err");
+        let is_http = matches!(result, Err(SdkError::Http(_)));
+        assert!(is_http, "should be SdkError::Http variant");
+    }
+
+    #[tokio::test]
+    async fn submit_task_with_recovery_recovers_from_file() {
+        // Bind a listener that accepts connections but never responds,
+        // so the HTTP call hangs rather than failing immediately.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|_| std::process::abort());
+        let addr = listener.local_addr().unwrap_or_else(|_| std::process::abort());
+
+        // Accept connections in background so the OS doesn't RST them.
+        let _accept_handle = tokio::spawn(async move {
+            // Keep listener alive and accept (but never read/write).
+            loop {
+                let _conn = listener.accept();
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let output_path = dir.path().join("recovered.txt");
+        let output_clone = output_path.clone();
+
+        // Spawn a task that creates the file after 50ms.
+        let _handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = std::fs::write(&output_clone, "recovered content");
+        });
+
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: Duration::from_millis(5000),
+            poll_interval: Duration::from_millis(30),
+            poll_initial_delay: Duration::from_millis(10),
+            max_poll_duration: Duration::from_millis(1000),
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+
+        let payload = TaskPayload {
+            task: String::from("name: test\ncommand: echo"),
+            input: String::from("hello"),
+            working_directory: None,
+            environment: None,
+            limiter_key: None,
+            timeout_ms: None,
+        };
+
+        let result = client
+            .submit_task_with_recovery(&payload, &output_path)
+            .await;
+
+        assert!(result.is_ok(), "should recover via file poll");
+        let task_result = result.unwrap_or_else(|_| std::process::abort());
+        assert!(task_result.success, "recovered result should be successful");
+    }
+
+    #[test]
+    fn task_result_require_success_ok() {
+        let result = TaskResult {
+            success: true,
+            output: String::from("done"),
+            exit_code: Some(0),
+            elapsed: None,
+            started_at: None,
+        };
+        assert!(result.require_success().is_ok(), "should pass for successful result");
+    }
+
+    #[test]
+    fn task_result_require_success_err() {
+        let result = TaskResult {
+            success: false,
+            output: String::from("command failed"),
+            exit_code: Some(1),
+            elapsed: None,
+            started_at: None,
+        };
+        let err = result.require_success();
+        assert!(err.is_err(), "should fail for unsuccessful result");
+        let is_task_failed = matches!(err, Err(SdkError::TaskFailed { .. }));
+        assert!(is_task_failed, "should be TaskFailed variant");
+    }
+
+    #[test]
+    fn api_elapsed_display_seconds_only() {
+        let elapsed = ApiElapsed { secs: Some(42), nanos: Some(0) };
+        assert_eq!(elapsed.to_display_string(), "42s");
+    }
+
+    #[test]
+    fn api_elapsed_display_with_millis() {
+        let elapsed = ApiElapsed { secs: Some(3), nanos: Some(150_000_000) };
+        assert_eq!(elapsed.to_display_string(), "3.150s");
     }
 }

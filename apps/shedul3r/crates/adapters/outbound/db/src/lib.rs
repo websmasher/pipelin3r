@@ -1,11 +1,3 @@
-//! In-memory resilience adapters: rate limiter, circuit breaker, bulkhead, retry.
+//! In-memory adapters for resilience components — delegates to limit3r.
 
-mod bulkhead;
-mod circuit_breaker;
-mod rate_limiter;
-mod retry;
-
-pub use bulkhead::InMemoryBulkhead;
-pub use circuit_breaker::InMemoryCircuitBreaker;
-pub use rate_limiter::InMemoryRateLimiter;
-pub use retry::TokioRetryExecutor;
+pub use limit3r::{InMemoryBulkhead, InMemoryCircuitBreaker, InMemoryRateLimiter, TokioRetryExecutor};

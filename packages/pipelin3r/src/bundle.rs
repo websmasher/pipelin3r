@@ -5,6 +5,36 @@
 
 use crate::error::PipelineError;
 
+/// Validate that a bundle path contains only normal components (no `..`, `/`, etc.).
+///
+/// Rejects any path that contains parent traversal, root components, or prefix
+/// components. Only relative paths with normal segments are allowed.
+///
+/// # Errors
+/// Returns an error if the path contains non-normal components.
+fn validate_path(name: &str) -> Result<(), PipelineError> {
+    if name.is_empty() {
+        return Err(PipelineError::Bundle(String::from(
+            "invalid bundle path: empty",
+        )));
+    }
+    let path = std::path::Path::new(name);
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::CurDir
+            | std::path::Component::ParentDir => {
+                return Err(PipelineError::Bundle(format!(
+                    "invalid bundle path: {name}"
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A collection of files to send alongside an agent invocation.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -23,16 +53,24 @@ impl Bundle {
     }
 
     /// Add a binary file to the bundle.
-    pub fn add_file(mut self, path: &str, content: &[u8]) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the path contains traversal components (e.g. `..`).
+    pub fn add_file(mut self, path: &str, content: &[u8]) -> Result<Self, PipelineError> {
+        validate_path(path)?;
         self.files.push((String::from(path), content.to_vec()));
-        self
+        Ok(self)
     }
 
     /// Add a text file to the bundle.
-    pub fn add_text_file(mut self, path: &str, content: &str) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the path contains traversal components (e.g. `..`).
+    pub fn add_text_file(mut self, path: &str, content: &str) -> Result<Self, PipelineError> {
+        validate_path(path)?;
         self.files
             .push((String::from(path), content.as_bytes().to_vec()));
-        self
+        Ok(self)
     }
 
     /// Register an expected output path (relative to the working directory).
@@ -104,10 +142,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertion on known-Ok value
     fn add_files_and_outputs() {
         let bundle = Bundle::new()
             .add_file("data.bin", &[0x00, 0x01, 0x02])
+            .unwrap()
             .add_text_file("prompt.md", "Hello world")
+            .unwrap()
             .expected_output("result.json");
 
         assert_eq!(bundle.file_count(), 2, "should have two files");
@@ -124,10 +165,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertion on known-Ok value
     fn write_to_temp_dir_creates_files() {
         let bundle = Bundle::new()
             .add_text_file("hello.txt", "world")
-            .add_text_file("sub/nested.txt", "deep");
+            .unwrap()
+            .add_text_file("sub/nested.txt", "deep")
+            .unwrap();
 
         let result = bundle.write_to_temp_dir();
         assert!(result.is_ok(), "should succeed writing to temp dir");
@@ -145,5 +189,45 @@ mod tests {
             "nested file should exist"
         );
         // TempDir cleanup is automatic on drop.
+    }
+
+    #[test]
+    fn path_traversal_parent_rejected() {
+        let result = Bundle::new().add_file("../../etc/shadow", b"evil");
+        assert!(result.is_err(), "parent traversal should be rejected");
+        let msg = result.unwrap_or_else(|e| {
+            assert!(
+                e.to_string().contains("invalid bundle path"),
+                "error should mention invalid path: {e}"
+            );
+            Bundle::new()
+        });
+        assert_eq!(msg.file_count(), 0, "no files should be added");
+    }
+
+    #[test]
+    fn path_traversal_absolute_rejected() {
+        let result = Bundle::new().add_text_file("/etc/passwd", "evil");
+        assert!(result.is_err(), "absolute path should be rejected");
+    }
+
+    #[test]
+    fn path_traversal_dot_rejected() {
+        let result = Bundle::new().add_file("./something", b"data");
+        assert!(result.is_err(), "current-dir component should be rejected");
+    }
+
+    #[test]
+    fn path_empty_rejected() {
+        let result = Bundle::new().add_file("", b"data");
+        assert!(result.is_err(), "empty path should be rejected");
+    }
+
+    #[test]
+    fn validate_path_normal_nested() {
+        assert!(
+            validate_path("sub/dir/file.txt").is_ok(),
+            "normal nested path should be valid"
+        );
     }
 }

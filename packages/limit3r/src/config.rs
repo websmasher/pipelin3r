@@ -192,6 +192,199 @@ mod tests {
         assert_eq!(deserialized.max_delay, config.max_delay);
     }
 
+    // --- Config validation tests ---
+
+    #[test]
+    fn rate_limit_config_rejects_zero_limit_for_period() {
+        let config = RateLimitConfig {
+            limit_for_period: 0,
+            limit_refresh_period: Duration::from_secs(1),
+            timeout_duration: Duration::from_secs(1),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rate_limit_config_rejects_zero_refresh_period() {
+        let config = RateLimitConfig {
+            limit_for_period: 10,
+            limit_refresh_period: Duration::ZERO,
+            timeout_duration: Duration::from_secs(1),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rate_limit_config_rejects_zero_timeout() {
+        let config = RateLimitConfig {
+            limit_for_period: 10,
+            limit_refresh_period: Duration::from_secs(1),
+            timeout_duration: Duration::ZERO,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rate_limit_config_accepts_valid() {
+        let config = RateLimitConfig {
+            limit_for_period: 10,
+            limit_refresh_period: Duration::from_secs(1),
+            timeout_duration: Duration::from_secs(1),
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn circuit_breaker_config_rejects_zero_window() {
+        let config = CircuitBreakerConfig {
+            failure_rate_threshold: 50.0,
+            sliding_window_size: 0,
+            wait_duration_in_open_state: Duration::from_secs(5),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn circuit_breaker_config_rejects_negative_threshold() {
+        let config = CircuitBreakerConfig {
+            failure_rate_threshold: -1.0,
+            sliding_window_size: 10,
+            wait_duration_in_open_state: Duration::from_secs(5),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn circuit_breaker_config_rejects_threshold_over_100() {
+        let config = CircuitBreakerConfig {
+            failure_rate_threshold: 101.0,
+            sliding_window_size: 10,
+            wait_duration_in_open_state: Duration::from_secs(5),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn circuit_breaker_config_rejects_zero_wait_duration() {
+        let config = CircuitBreakerConfig {
+            failure_rate_threshold: 50.0,
+            sliding_window_size: 10,
+            wait_duration_in_open_state: Duration::ZERO,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn circuit_breaker_config_accepts_valid() {
+        let config = CircuitBreakerConfig {
+            failure_rate_threshold: 50.0,
+            sliding_window_size: 10,
+            wait_duration_in_open_state: Duration::from_secs(5),
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn circuit_breaker_config_accepts_boundary_thresholds() {
+        let zero = CircuitBreakerConfig {
+            failure_rate_threshold: 0.0,
+            sliding_window_size: 10,
+            wait_duration_in_open_state: Duration::from_secs(5),
+        };
+        assert!(zero.validate().is_ok());
+
+        let hundred = CircuitBreakerConfig {
+            failure_rate_threshold: 100.0,
+            sliding_window_size: 10,
+            wait_duration_in_open_state: Duration::from_secs(5),
+        };
+        assert!(hundred.validate().is_ok());
+    }
+
+    #[test]
+    fn retry_config_rejects_zero_attempts() {
+        let config = RetryConfig {
+            max_attempts: 0,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn retry_config_rejects_nan_multiplier() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: f64::NAN,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn retry_config_rejects_infinite_multiplier() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: f64::INFINITY,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn retry_config_rejects_negative_multiplier() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: -1.0,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn retry_config_rejects_zero_multiplier() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: 0.0,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn retry_config_accepts_valid() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn bulkhead_config_rejects_zero_max_concurrent() {
+        let config = BulkheadConfig {
+            max_concurrent: 0,
+            max_wait_duration: Duration::from_millis(100),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn bulkhead_config_accepts_valid() {
+        let config = BulkheadConfig {
+            max_concurrent: 5,
+            max_wait_duration: Duration::from_millis(100),
+        };
+        assert!(config.validate().is_ok());
+    }
+
     #[test]
     fn bulkhead_config_serde_round_trip() {
         let config = BulkheadConfig {

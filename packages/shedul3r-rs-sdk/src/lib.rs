@@ -16,6 +16,8 @@
 //!     input: String::from("hello"),
 //!     working_directory: None,
 //!     environment: None,
+//!     limiter_key: None,
+//!     timeout_ms: None,
 //! };
 //! let result = client.submit_task(&payload).await?;
 //! assert!(result.success);

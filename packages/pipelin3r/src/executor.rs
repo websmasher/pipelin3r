@@ -7,8 +7,10 @@ use shedul3r_rs_sdk::{Client, ClientConfig};
 
 use crate::agent::AgentBuilder;
 use crate::auth::Auth;
+use crate::command::CommandBuilder;
 use crate::error::PipelineError;
 use crate::model::{ModelConfig, Provider};
+use crate::transform::TransformBuilder;
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
 pub struct Executor {
@@ -97,6 +99,16 @@ impl Executor {
     /// Create an agent builder for a named agent.
     pub fn agent(&self, name: &str) -> AgentBuilder<'_> {
         AgentBuilder::new(self, name)
+    }
+
+    /// Create a command builder for the given program.
+    pub fn command(&self, program: &str) -> CommandBuilder {
+        CommandBuilder::new(program)
+    }
+
+    /// Create a transform builder for the given step name.
+    pub fn transform(&self, name: &str) -> TransformBuilder {
+        TransformBuilder::new(name)
     }
 
     /// Get a reference to the underlying SDK client.

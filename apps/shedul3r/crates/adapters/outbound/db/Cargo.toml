@@ -11,6 +11,3 @@ workspace = true
 
 [dependencies]
 limit3r = { path = "../../../../../../packages/limit3r" }
-tokio = { workspace = true, features = ["sync", "time"] }
-tracing = { workspace = true }
-parking_lot = { workspace = true }

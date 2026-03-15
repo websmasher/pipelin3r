@@ -294,7 +294,7 @@ fn build_task_response(
             metadata: ExecutionMetadata {
                 started_at,
                 elapsed,
-                exit_code: 1,
+                exit_code: result.exit_code,
             },
         }
     }

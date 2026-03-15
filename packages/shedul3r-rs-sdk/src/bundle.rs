@@ -83,7 +83,9 @@ impl super::Client {
     ) -> Result<Vec<u8>, SdkError> {
         let url = format!(
             "{}/api/bundles/{}/files/{}",
-            self.base_url(), bundle_id, path
+            self.base_url(),
+            urlencoding::encode(bundle_id),
+            urlencoding::encode(path),
         );
 
         let resp: reqwest::Response = self.http_client().get(&url).send().await?;
@@ -110,7 +112,8 @@ impl super::Client {
     pub async fn delete_bundle(&self, bundle_id: &str) -> Result<(), SdkError> {
         let url = format!(
             "{}/api/bundles/{}",
-            self.base_url(), bundle_id
+            self.base_url(),
+            urlencoding::encode(bundle_id),
         );
 
         let resp: reqwest::Response = self.http_client().delete(&url).send().await?;

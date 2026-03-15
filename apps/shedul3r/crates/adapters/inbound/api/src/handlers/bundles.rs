@@ -46,7 +46,7 @@ fn validate_bundle_path(name: &str) -> Result<(), AppError> {
     for component in path.components() {
         match component {
             Component::Normal(_) => {} // OK — plain filename or directory name
-            _ => {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir | Component::ParentDir => {
                 return Err(AppError::BadRequest(format!(
                     "invalid bundle path: {name}"
                 )));
@@ -186,18 +186,21 @@ async fn download(
 
     let full_path = bundle_base.join(&file_path);
 
-    let bytes = tokio::fs::read(&full_path).await.map_err(|e| {
+    let file = tokio::fs::File::open(&full_path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             AppError::NotFound(format!("file not found: {file_path}"))
         } else {
-            AppError::Internal(format!("failed to read file: {e}"))
+            AppError::Internal(format!("failed to open file: {e}"))
         }
     })?;
+
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = Body::from_stream(stream);
 
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/octet-stream")],
-        Body::from(bytes),
+        body,
     )
         .into_response())
 }

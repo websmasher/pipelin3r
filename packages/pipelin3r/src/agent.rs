@@ -11,7 +11,7 @@ use crate::auth::{merge_env, Auth};
 use crate::bundle::Bundle;
 use crate::error::PipelineError;
 use crate::executor::{extract_step_name, Executor};
-use crate::model::Model;
+use crate::model::{Model, Tool};
 use crate::pool::run_pool;
 use crate::task::{build_task_yaml, TaskConfig};
 
@@ -33,7 +33,9 @@ impl AgentResult {
         if self.success {
             Ok(self)
         } else {
-            Err(PipelineError::Other(format!("agent failed: {}", self.output)))
+            Err(PipelineError::AgentFailed {
+                message: self.output.clone(),
+            })
         }
     }
 }
@@ -144,9 +146,19 @@ impl<'a> AgentBuilder<'a> {
         self
     }
 
-    /// Set the allowed tools (comma-separated list).
-    pub fn tools(mut self, tools: &[&str]) -> Self {
-        self.tools = Some(tools.join(","));
+    /// Set the allowed tools.
+    pub fn tools(mut self, tools: &[Tool]) -> Self {
+        let joined: String = tools
+            .iter()
+            .enumerate()
+            .fold(String::new(), |mut acc, (i, t)| {
+                if i > 0 {
+                    acc.push(',');
+                }
+                acc.push_str(t.as_str());
+                acc
+            });
+        self.tools = Some(joined);
         self
     }
 
@@ -249,6 +261,8 @@ impl<'a> AgentBuilder<'a> {
                 &prompt,
                 self.expected_output.as_deref(),
                 self.working_dir.as_deref(),
+                env.as_ref(),
+                self.bundle_data.as_ref(),
             );
         }
 
@@ -401,10 +415,35 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        Ok(inner
+        let results: Vec<Result<AgentResult, PipelineError>> = inner
             .into_iter()
-            .map(|opt| opt.unwrap_or_else(|| Err(PipelineError::Other(String::from("batch task result missing")))))
-            .collect())
+            .map(|opt| {
+                opt.unwrap_or_else(|| {
+                    Err(PipelineError::AgentFailed {
+                        message: String::from("batch task result missing"),
+                    })
+                })
+            })
+            .collect();
+
+        // Check for partial failures and report via BatchPartialFailure if needed.
+        let mut succeeded: usize = 0;
+        let mut failed: usize = 0;
+        for r in &results {
+            if r.is_ok() {
+                succeeded = succeeded.saturating_add(1);
+            } else {
+                failed = failed.saturating_add(1);
+            }
+        }
+
+        if failed > 0 && succeeded > 0 {
+            tracing::warn!(
+                "Batch partial failure: {succeeded} succeeded, {failed} failed out of {total}"
+            );
+        }
+
+        Ok(results)
     }
 }
 
@@ -415,6 +454,8 @@ fn execute_dry_run_capture(
     prompt: &str,
     expected_output: Option<&Path>,
     working_dir: Option<&Path>,
+    env: Option<&BTreeMap<String, String>>,
+    bundle: Option<&Bundle>,
 ) -> Result<AgentResult, PipelineError> {
     let mut guard = dry_run_mutex
         .lock()
@@ -431,9 +472,21 @@ fn execute_dry_run_capture(
     std::fs::write(capture_dir.join("prompt.md"), prompt)?;
     std::fs::write(capture_dir.join("task.yaml"), task_yaml)?;
 
+    // Collect environment variable names (redacted — keys only, no values).
+    let env_keys: Vec<&str> = env
+        .map(|m| m.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+
+    // Collect bundle file paths (names only, not contents).
+    let bundle_files: Vec<&str> = bundle
+        .map(|b| b.files().iter().map(|(name, _)| name.as_str()).collect())
+        .unwrap_or_default();
+
     let meta = serde_json::json!({
         "expectedOutput": expected_output.map(|p| p.display().to_string()),
         "workingDirectory": working_dir.map(|p| p.display().to_string()),
+        "environment": env_keys,
+        "bundleFiles": bundle_files,
     });
     std::fs::write(
         capture_dir.join("meta.json"),
@@ -471,12 +524,23 @@ fn execute_batch_task_dry_run(
         allowed_tools: config.tools.clone(),
     })?;
 
+    // Resolve auth for meta: task override > batch default.
+    let auth_env = if let Some(ref auth) = task.auth {
+        Some(auth.to_env()?)
+    } else if config.default_auth_env.is_empty() {
+        None
+    } else {
+        Some(config.default_auth_env.clone())
+    };
+
     execute_dry_run_capture(
         dry_run_mutex,
         &task_yaml,
         prompt,
         task.expected_output.as_deref(),
         task.working_dir.as_deref(),
+        auth_env.as_ref(),
+        task.bundle_data.as_ref(),
     )
 }
 
@@ -523,6 +587,8 @@ async fn execute_remote_bundle(
         input: String::from(prompt),
         working_directory,
         environment: env,
+        limiter_key: None,
+        timeout_ms: None,
     };
 
     // Wrap execution in a block that always cleans up the bundle.
