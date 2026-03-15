@@ -17,5 +17,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

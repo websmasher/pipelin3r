@@ -35,4 +35,4 @@ pub use executor::Executor;
 pub use model::{Model, Provider};
 pub use pool::run_pool;
 pub use template::TemplateFiller;
-pub use transform::TransformBuilder;
+pub use transform::{TransformBuilder, TransformResult};

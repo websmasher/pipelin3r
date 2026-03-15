@@ -679,6 +679,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertion on error path
     fn agent_result_require_success_err() {
         let result = AgentResult {
             success: false,

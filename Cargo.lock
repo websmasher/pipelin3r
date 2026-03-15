@@ -736,6 +736,7 @@ dependencies = [
  "anyhow",
  "serde_json",
  "shedul3r-rs-sdk",
+ "tempfile",
  "tokio",
  "tracing",
 ]
