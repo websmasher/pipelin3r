@@ -1,0 +1,3 @@
+name: pipe-command
+command: echo foo bar baz | wc -w
+timeout: 10s

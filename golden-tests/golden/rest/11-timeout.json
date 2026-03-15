@@ -1,0 +1,9 @@
+{
+  "metadata": {
+    "elapsed": "DYNAMIC",
+    "exit_code": 1,
+    "started_at": "DYNAMIC"
+  },
+  "output": "Exit -1: Process timed out after PT1S",
+  "success": false
+}

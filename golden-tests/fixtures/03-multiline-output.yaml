@@ -1,0 +1,3 @@
+name: multiline-output
+command: printf "line1\nline2\nline3"
+timeout: 10s

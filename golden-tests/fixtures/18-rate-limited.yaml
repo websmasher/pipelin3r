@@ -1,0 +1,7 @@
+name: rate-limited
+command: echo rate-limited
+timeout: 10s
+provider-id: test-rl
+rate-limit:
+  max-rate: 5
+  window: 1s

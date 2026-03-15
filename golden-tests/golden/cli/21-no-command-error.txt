@@ -1,0 +1,3 @@
+EXIT_CODE: 1
+OUTPUT:
+ERROR: Task definition must specify either 'run' or 'command' field

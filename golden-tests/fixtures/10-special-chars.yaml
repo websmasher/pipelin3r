@@ -1,0 +1,3 @@
+name: special-chars
+command: "printf \"quotes: \\\"hello\\\"\\nnewline: done\\ttab: here\""
+timeout: 10s

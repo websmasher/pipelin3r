@@ -1,0 +1,4 @@
+{
+  "error": "task_not_found",
+  "message": "Task definition must specify either 'run' or 'command' field"
+}

@@ -1,0 +1,8 @@
+name: full-resilience
+command: echo ok
+timeout: 10s
+provider-id: test-full
+rate-limit:
+  max-rate: 10
+  window: 1s
+max-concurrent: 3

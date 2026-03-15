@@ -1,0 +1,6 @@
+name: retry-always-fail
+command: exit 1
+timeout: 10s
+retry:
+  max-retries: 2
+  initial-delay: 1s

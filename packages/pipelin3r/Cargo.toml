@@ -1,0 +1,22 @@
+[package]
+name = "pipelin3r"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Pipeline orchestration for LLM-powered workflows"
+license = "MIT"
+repository = "https://github.com/3jane/pipelin3r"
+keywords = ["pipeline", "llm", "orchestration", "workflow"]
+categories = ["development-tools", "asynchronous"]
+
+[dependencies]
+shedul3r-rs-sdk = { path = "../shedul3r-rs-sdk" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+toml = "0.8"
+
+[lints]
+workspace = true

@@ -1,0 +1,128 @@
+//! Semaphore-based concurrency limiter backed by in-memory state.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use domain_types::{BulkheadConfig, SchedulrError};
+use parking_lot::RwLock;
+use tokio::sync::Semaphore;
+
+/// Per-key bulkhead state.
+#[derive(Debug)]
+struct BulkheadState {
+    /// Semaphore controlling concurrent access.
+    semaphore: Arc<Semaphore>,
+    /// Configured maximum concurrency (used to detect config changes).
+    max_concurrent: u32,
+}
+
+/// Type alias to reduce type complexity for the inner state map.
+type StateMap = BTreeMap<String, BulkheadState>;
+
+/// In-memory semaphore-based bulkhead for concurrency limiting.
+///
+/// Each key gets its own [`Semaphore`] with `max_concurrent` permits.
+/// Callers acquire a permit before executing and release it when done.
+/// If no permits are available, the caller waits up to `max_wait_duration`
+/// before receiving a [`SchedulrError::BulkheadFull`] error.
+#[derive(Debug)]
+pub struct InMemoryBulkhead {
+    state: RwLock<StateMap>,
+}
+
+impl Default for InMemoryBulkhead {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InMemoryBulkhead {
+    /// Create a new, empty bulkhead.
+    pub const fn new() -> Self {
+        Self {
+            state: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    /// Get or create the semaphore for a given key.
+    fn get_or_create_semaphore(&self, key: &str, config: &BulkheadConfig) -> Arc<Semaphore> {
+        // Fast path: read lock
+        let cached = {
+            let map = self.state.read();
+            map.get(key).and_then(|entry| {
+                if entry.max_concurrent == config.max_concurrent {
+                    Some(Arc::clone(&entry.semaphore))
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(sem) = cached {
+            return sem;
+        }
+
+        // Slow path: write lock to insert or update
+        let permits = usize::try_from(config.max_concurrent).unwrap_or(usize::MAX);
+        let mut map = self.state.write();
+        let needs_insert = !map.contains_key(key);
+        if needs_insert {
+            let _prev = map.insert(
+                key.to_owned(),
+                BulkheadState {
+                    semaphore: Arc::new(Semaphore::new(permits)),
+                    max_concurrent: config.max_concurrent,
+                },
+            );
+        }
+
+        let Some(entry) = map.get_mut(key) else {
+            // Defensive: we just inserted, this should never happen
+            drop(map);
+            return Arc::new(Semaphore::new(permits));
+        };
+
+        // If config changed, replace the semaphore
+        if entry.max_concurrent != config.max_concurrent {
+            entry.semaphore = Arc::new(Semaphore::new(permits));
+            entry.max_concurrent = config.max_concurrent;
+        }
+
+        let result = Arc::clone(&entry.semaphore);
+        drop(map);
+        result
+    }
+}
+
+impl repo::Bulkhead for InMemoryBulkhead {
+    async fn acquire(&self, key: &str, config: &BulkheadConfig) -> Result<(), SchedulrError> {
+        let semaphore = self.get_or_create_semaphore(key, config);
+
+        let result = tokio::time::timeout(config.max_wait_duration, semaphore.acquire()).await;
+
+        match result {
+            Ok(Ok(permit)) => {
+                // Forget the permit so it is not auto-released on drop.
+                // The caller must explicitly call `release()` later.
+                permit.forget();
+                Ok(())
+            }
+            Ok(Err(_closed)) => {
+                // Semaphore was closed — treat as full
+                Err(SchedulrError::BulkheadFull {
+                    key: key.to_owned(),
+                })
+            }
+            Err(_timeout) => Err(SchedulrError::BulkheadFull {
+                key: key.to_owned(),
+            }),
+        }
+    }
+
+    fn release(&self, key: &str) {
+        let map = self.state.read();
+        if let Some(entry) = map.get(key) {
+            entry.semaphore.add_permits(1);
+        }
+    }
+}

@@ -1,0 +1,9 @@
+{
+  "metadata": {
+    "elapsed": "DYNAMIC",
+    "exit_code": 0,
+    "started_at": "DYNAMIC"
+  },
+  "output": "hello from stdin",
+  "success": true
+}

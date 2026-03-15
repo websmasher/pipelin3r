@@ -1,0 +1,6 @@
+EXIT_CODE: 0
+OUTPUT:
+Success: true
+Output: golden_value
+Exit code: 0
+Duration: DYNAMIC

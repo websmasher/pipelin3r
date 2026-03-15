@@ -1,0 +1,153 @@
+# =============================================================================
+# clippy.toml -- Static analysis guardrails for the Rust backend service
+# =============================================================================
+# Reference: docs/rust-setup/04-guardrails-clippy-toml.md
+#
+# This file configures thresholds, banned methods, and banned types that Clippy
+# enforces at compile time. It works in conjunction with [lints.clippy] in
+# Cargo.toml, which must include:
+#   disallowed_methods = "deny"
+#   disallowed_types = "deny"
+
+# =============================================================================
+# THRESHOLDS
+# =============================================================================
+
+# Maximum lines per function before clippy::too_many_lines fires.
+too-many-lines-threshold = 75
+
+# Maximum cognitive complexity score per function.
+cognitive-complexity-threshold = 15
+
+# Maximum number of function parameters.
+too-many-arguments-threshold = 7
+
+# Maximum type nesting depth (e.g., Result<Option<Vec<Box<dyn Trait>>>>).
+# 75 is the clippy default. Legitimate types like Option<BTreeMap<String, Vec<u8>>>
+# score well under this. If legitimate types hit this, bump to 100.
+type-complexity-threshold = 75
+
+# Maximum number of bool fields in a struct before clippy::struct_excessive_bools fires.
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+# Every entry requires a `reason` field. When a developer (or agent) uses a
+# banned method, Clippy prints the reason as the error message.
+
+disallowed-methods = [
+    # -------------------------------------------------------------------------
+    # Environment variable access -- use centralized config module
+    # -------------------------------------------------------------------------
+    # Scattered std::env calls make configuration unpredictable and untestable.
+    # All environment reads must go through a single config module that validates
+    # and documents every expected variable.
+    { path = "std::env::var", reason = "Use the centralized config module -- direct env access scatters configuration and is untestable" },
+    { path = "std::env::var_os", reason = "Use the centralized config module -- direct env access scatters configuration and is untestable" },
+    { path = "std::env::vars", reason = "Use the centralized config module -- direct env access scatters configuration and is untestable" },
+
+    # -------------------------------------------------------------------------
+    # Environment variable mutation -- unsafe in multi-threaded contexts
+    # -------------------------------------------------------------------------
+    # std::env::set_var and remove_var mutate the process environment, which is
+    # not thread-safe. In a multi-threaded async runtime (tokio), this is
+    # undefined behavior per POSIX and can cause crashes or data corruption.
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -------------------------------------------------------------------------
+    # Process control -- use proper error propagation
+    # -------------------------------------------------------------------------
+    # std::process::exit bypasses destructors and does not unwind the stack.
+    # Return a Result from main instead.
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result from main) -- process::exit skips destructors" },
+
+    # Shell execution is not permitted in this service. There is no subprocess
+    # module and no legitimate use case for spawning child processes.
+    { path = "std::process::Command::new", reason = "Shell execution not permitted in this service" },
+
+    # -------------------------------------------------------------------------
+    # Blocking sleep -- use tokio::time::sleep
+    # -------------------------------------------------------------------------
+    # This service runs on the tokio async runtime. std::thread::sleep blocks
+    # the entire OS thread, which starves the tokio executor.
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep for async context -- std::thread::sleep blocks the tokio runtime" },
+
+    # -------------------------------------------------------------------------
+    # Filesystem operations -- use centralized io module
+    # -------------------------------------------------------------------------
+    # This is a stateless web service. Filesystem side effects should not be
+    # scattered across the codebase. If file I/O is genuinely needed, it must
+    # go through a centralized io/config module that can be audited and tested.
+
+    # Reads
+    { path = "std::fs::read_to_string", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::read", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::read_dir", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::read_link", reason = "Use centralized io module for all file operations" },
+
+    # Writes
+    { path = "std::fs::write", reason = "Use centralized io module for all file operations" },
+
+    # Destructive operations
+    { path = "std::fs::remove_file", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::remove_dir_all", reason = "Use centralized io module for all file operations" },
+
+    # Directory creation
+    { path = "std::fs::create_dir_all", reason = "Use centralized io module for all file operations" },
+
+    # Move / copy
+    { path = "std::fs::rename", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::copy", reason = "Use centralized io module for all file operations" },
+
+    # Metadata and inspection
+    { path = "std::fs::metadata", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::symlink_metadata", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::canonicalize", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::set_permissions", reason = "Use centralized io module for all file operations" },
+    { path = "std::fs::hard_link", reason = "Use centralized io module for all file operations" },
+
+    # -------------------------------------------------------------------------
+    # HTTP client construction -- use shared client via DI
+    # -------------------------------------------------------------------------
+    # Constructing reqwest::Client per-request skips connection pooling and
+    # leaks resources. All HTTP clients must be constructed once at startup
+    # and injected via application state.
+    { path = "reqwest::Client::new", reason = "Use shared client from AppState -- per-request construction skips connection pooling" },
+    { path = "reqwest::Client::builder", reason = "Use shared client from AppState -- construct once at startup and inject via DI" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES
+# =============================================================================
+# Banned types with required alternatives.
+
+disallowed-types = [
+    # -------------------------------------------------------------------------
+    # Collections -- use deterministic BTree variants
+    # -------------------------------------------------------------------------
+    # HashMap and HashSet have non-deterministic iteration order, which makes
+    # debugging, logging, and snapshot testing unreliable. BTreeMap/BTreeSet
+    # iterate in sorted key order.
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -------------------------------------------------------------------------
+    # Synchronization -- use parking_lot (no poisoning)
+    # -------------------------------------------------------------------------
+    # std::sync::Mutex and RwLock use poisoning: if a thread panics while
+    # holding the lock, all subsequent lock attempts return Err. This makes
+    # recovery difficult and leads to cascading failures. parking_lot::Mutex
+    # and parking_lot::RwLock do not poison and have better performance.
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -------------------------------------------------------------------------
+    # Filesystem -- use centralized io module
+    # -------------------------------------------------------------------------
+    # Banning the File type itself catches File::open, File::create, and any
+    # other constructor. All file handle construction must go through the
+    # centralized io module.
+    { path = "std::fs::File", reason = "Use centralized io module -- no direct file handle construction" },
+]

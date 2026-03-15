@@ -1,0 +1,5 @@
+name: invalid
+command: echo hello
+timeout: [10s
+  this is broken yaml
+  {unclosed: bracket

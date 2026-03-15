@@ -1,0 +1,17 @@
+[package]
+name = "state"
+version.workspace = true
+description = "Outbound adapter — in-memory state backend for rate limiting, circuit breaking, and bulkhead"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+domain-types = { path = "../../../domain/types" }
+repo = { path = "../../../ports/outbound/repo" }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
+parking_lot = { workspace = true }

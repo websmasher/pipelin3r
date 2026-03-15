@@ -1,0 +1,3 @@
+name: stdin-cat
+command: cat
+timeout: 10s

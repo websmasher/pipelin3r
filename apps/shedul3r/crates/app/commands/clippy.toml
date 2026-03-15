@@ -1,0 +1,98 @@
+# =============================================================================
+# clippy.toml -- Guardrails for the commands crate (application use cases)
+# =============================================================================
+# Reference: docs/rust-setup/04-guardrails-clippy-toml.md
+#
+# Use cases / business logic orchestration. Depends on domain-types and repo
+# (port traits). Receives adapters via trait bounds — never imports concrete
+# implementations.
+#
+# clippy.toml does not support inheritance -- this file is self-contained.
+#
+# Cargo.toml must include:
+#   disallowed_methods = "deny"
+#   disallowed_types = "deny"
+
+# =============================================================================
+# THRESHOLDS (same as workspace)
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS (workspace bans + global state mutation)
+# =============================================================================
+
+disallowed-methods = [
+    # -- Environment variable access --
+    { path = "std::env::var", reason = "Command layer receives config via injection -- no direct env access" },
+    { path = "std::env::var_os", reason = "Command layer receives config via injection -- no direct env access" },
+    { path = "std::env::vars", reason = "Command layer receives config via injection -- no direct env access" },
+
+    # -- Environment variable mutation --
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -- Process control --
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result from main) -- process::exit skips destructors" },
+    { path = "std::process::Command::new", reason = "Shell execution not permitted in this service" },
+
+    # -- Blocking sleep --
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep for async context -- std::thread::sleep blocks the tokio runtime" },
+
+    # -- Filesystem operations --
+    { path = "std::fs::read_to_string", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::read", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::read_dir", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::read_link", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::write", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::remove_file", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::remove_dir_all", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::create_dir_all", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::rename", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::copy", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::metadata", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::symlink_metadata", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::canonicalize", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::set_permissions", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+    { path = "std::fs::hard_link", reason = "Command layer orchestrates via traits -- no direct filesystem access" },
+
+    # -------------------------------------------------------------------------
+    # HTTP client construction -- use shared client via DI
+    # -------------------------------------------------------------------------
+    # Constructing reqwest::Client per-request skips connection pooling and
+    # leaks resources. All HTTP clients must be constructed once at startup
+    # and injected via application state.
+    { path = "reqwest::Client::new", reason = "Command layer receives HTTP client via injection -- no direct construction" },
+    { path = "reqwest::Client::builder", reason = "Command layer receives HTTP client via injection -- no direct construction" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES (workspace bans + global state bans)
+# =============================================================================
+
+disallowed-types = [
+    # -- Collections --
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -- Synchronization --
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -- Filesystem --
+    { path = "std::fs::File", reason = "Command layer orchestrates via traits -- no direct file handle construction" },
+
+    # -- Global state (domain/ports/app crates only) --
+    # Business logic must be pure: all data comes in via function parameters.
+    # Global state creates hidden dependencies that make functions untestable
+    # and break dependency injection.
+    { path = "std::sync::LazyLock", reason = "App layer receives config via injection -- no global state allowed" },
+    { path = "std::sync::OnceLock", reason = "App layer receives config via injection -- no global state allowed" },
+    { path = "once_cell::sync::OnceCell", reason = "App layer receives config via injection -- no global state allowed" },
+    { path = "once_cell::sync::Lazy", reason = "App layer receives config via injection -- no global state allowed" },
+]

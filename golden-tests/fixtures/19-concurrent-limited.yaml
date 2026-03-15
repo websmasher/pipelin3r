@@ -1,0 +1,6 @@
+name: concurrent-limited
+command: sleep 1 && echo done
+timeout: 10s
+provider-id: test-conc
+max-concurrent: 2
+max-wait: 30s

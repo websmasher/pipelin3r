@@ -1,0 +1,3 @@
+name: command-not-found
+command: nonexistent_command_xyz
+timeout: 10s

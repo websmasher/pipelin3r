@@ -1,0 +1,98 @@
+# =============================================================================
+# clippy.toml -- Guardrails for the domain-types crate (entities, value objects, errors)
+# =============================================================================
+# Reference: docs/rust-setup/04-guardrails-clippy-toml.md
+#
+# Pure domain layer: entities, value objects, domain errors. ZERO internal
+# dependencies. All data arrives via function parameters — no env vars, no
+# filesystem, no global state.
+#
+# clippy.toml does not support inheritance -- this file is self-contained.
+#
+# Cargo.toml must include:
+#   disallowed_methods = "deny"
+#   disallowed_types = "deny"
+
+# =============================================================================
+# THRESHOLDS (same as workspace)
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS (workspace bans + global state mutation)
+# =============================================================================
+
+disallowed-methods = [
+    # -- Environment variable access --
+    { path = "std::env::var", reason = "Domain must be pure -- no environment access, all data via function parameters" },
+    { path = "std::env::var_os", reason = "Domain must be pure -- no environment access, all data via function parameters" },
+    { path = "std::env::vars", reason = "Domain must be pure -- no environment access, all data via function parameters" },
+
+    # -- Environment variable mutation --
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -- Process control --
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result from main) -- process::exit skips destructors" },
+    { path = "std::process::Command::new", reason = "Shell execution not permitted in this service" },
+
+    # -- Blocking sleep --
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep for async context -- std::thread::sleep blocks the tokio runtime" },
+
+    # -- Filesystem operations --
+    { path = "std::fs::read_to_string", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::read", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::read_dir", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::read_link", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::write", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::remove_file", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::remove_dir_all", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::create_dir_all", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::rename", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::copy", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::metadata", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::symlink_metadata", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::canonicalize", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::set_permissions", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+    { path = "std::fs::hard_link", reason = "Domain must be pure -- no filesystem access, all data via function parameters" },
+
+    # -------------------------------------------------------------------------
+    # HTTP client construction -- use shared client via DI
+    # -------------------------------------------------------------------------
+    # Constructing reqwest::Client per-request skips connection pooling and
+    # leaks resources. All HTTP clients must be constructed once at startup
+    # and injected via application state.
+    { path = "reqwest::Client::new", reason = "Domain must be pure -- no HTTP client construction, inject via trait" },
+    { path = "reqwest::Client::builder", reason = "Domain must be pure -- no HTTP client construction, inject via trait" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES (workspace bans + global state bans)
+# =============================================================================
+
+disallowed-types = [
+    # -- Collections --
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -- Synchronization --
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -- Filesystem --
+    { path = "std::fs::File", reason = "Domain must be pure -- no direct file handle construction" },
+
+    # -- Global state (domain/ports/app crates only) --
+    # Business logic must be pure: all data comes in via function parameters.
+    # Global state creates hidden dependencies that make functions untestable
+    # and break dependency injection.
+    { path = "std::sync::LazyLock", reason = "Domain must be pure -- no global state, all data via function parameters" },
+    { path = "std::sync::OnceLock", reason = "Domain must be pure -- no global state, all data via function parameters" },
+    { path = "once_cell::sync::OnceCell", reason = "Domain must be pure -- no global state, all data via function parameters" },
+    { path = "once_cell::sync::Lazy", reason = "Domain must be pure -- no global state, all data via function parameters" },
+]

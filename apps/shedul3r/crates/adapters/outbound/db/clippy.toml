@@ -1,0 +1,88 @@
+# =============================================================================
+# clippy.toml -- Guardrails for the state crate (outbound resilience adapter)
+# =============================================================================
+# In-memory implementations of resilience port traits (rate limiter, circuit
+# breaker, bulkhead, retry). This crate depends on domain-types and repo
+# (port traits). It must NOT depend on commands or api.
+#
+# clippy.toml does not support inheritance -- this file is self-contained.
+#
+# Cargo.toml must include:
+#   disallowed_methods = "deny"
+#   disallowed_types = "deny"
+
+# =============================================================================
+# THRESHOLDS (same as workspace)
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS (workspace bans with state-specific reasons)
+# =============================================================================
+
+disallowed-methods = [
+    # -- Environment variable access --
+    { path = "std::env::var", reason = "State adapter must not read environment -- config is injected via constructor" },
+    { path = "std::env::var_os", reason = "State adapter must not read environment -- config is injected via constructor" },
+    { path = "std::env::vars", reason = "State adapter must not read environment -- config is injected via constructor" },
+
+    # -- Environment variable mutation --
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -- Process control --
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result from main) -- process::exit skips destructors" },
+    { path = "std::process::Command::new", reason = "Shell execution not permitted in this crate" },
+
+    # -- Blocking sleep --
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep for async context -- std::thread::sleep blocks the tokio runtime" },
+
+    # -- Filesystem operations --
+    { path = "std::fs::read_to_string", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::read", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::read_dir", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::read_link", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::write", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::remove_file", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::remove_dir_all", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::create_dir_all", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::rename", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::copy", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::metadata", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::symlink_metadata", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::canonicalize", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::set_permissions", reason = "State adapter is in-memory only -- no filesystem access" },
+    { path = "std::fs::hard_link", reason = "State adapter is in-memory only -- no filesystem access" },
+
+    # -- HTTP client construction --
+    { path = "reqwest::Client::new", reason = "State adapter does not make HTTP calls" },
+    { path = "reqwest::Client::builder", reason = "State adapter does not make HTTP calls" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES (workspace bans + global state bans)
+# =============================================================================
+
+disallowed-types = [
+    # -- Collections --
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -- Synchronization --
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -- Filesystem --
+    { path = "std::fs::File", reason = "State adapter is in-memory only -- no direct file handle construction" },
+
+    # -- Global state (not allowed in adapter crates) --
+    { path = "std::sync::LazyLock", reason = "State adapter receives config via injection -- no global state allowed" },
+    { path = "std::sync::OnceLock", reason = "State adapter receives config via injection -- no global state allowed" },
+    { path = "once_cell::sync::OnceCell", reason = "State adapter receives config via injection -- no global state allowed" },
+    { path = "once_cell::sync::Lazy", reason = "State adapter receives config via injection -- no global state allowed" },
+]

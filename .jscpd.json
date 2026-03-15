@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/jscpd.json",
+  "threshold": 0,
+  "minTokens": 50,
+  "reporters": ["consoleFull"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/dist/**",
+    "**/target/**",
+    "**/components/ui/**",
+    "**/components/pro-blocks/**",
+    "**/drizzle/**",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "**/test/**",
+    "**/*.generated.*",
+    "**/coverage/**",
+    "**/.plans/**",
+    "**/.worklogs/**",
+    "**/lib/utils.ts",
+    "**/.claude/**",
+    "**/test-data/**",
+    "**/golden/**"
+  ],
+  "absolute": true,
+  "format": ["typescript", "rust"]
+}

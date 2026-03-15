@@ -1,0 +1,91 @@
+# =============================================================================
+# clippy.toml -- Guardrails for the subprocess crate (outbound process adapter)
+# =============================================================================
+# Concrete tokio::process implementations of subprocess runner traits. This
+# crate depends on domain-types and repo (port traits). It must NOT depend on
+# commands or api.
+#
+# clippy.toml does not support inheritance -- this file is self-contained.
+#
+# Cargo.toml must include:
+#   disallowed_methods = "deny"
+#   disallowed_types = "deny"
+
+# =============================================================================
+# THRESHOLDS (same as workspace)
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS (workspace bans with subprocess-specific reasons)
+# =============================================================================
+# NOTE: std::process::Command::new is NOT banned here -- this crate uses
+# tokio::process::Command (which wraps std::process::Command internally).
+# The workspace-level ban exists to prevent arbitrary shell execution in
+# non-subprocess crates.
+
+disallowed-methods = [
+    # -- Environment variable access --
+    { path = "std::env::var", reason = "Subprocess adapter must not read environment directly -- config is injected via constructor" },
+    { path = "std::env::var_os", reason = "Subprocess adapter must not read environment directly -- config is injected via constructor" },
+    { path = "std::env::vars", reason = "Subprocess adapter must not read environment directly -- config is injected via constructor" },
+
+    # -- Environment variable mutation --
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -- Process control --
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result from main) -- process::exit skips destructors" },
+
+    # -- Blocking sleep --
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep for async context -- std::thread::sleep blocks the tokio runtime" },
+
+    # -- Filesystem operations --
+    { path = "std::fs::read_to_string", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::read", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::read_dir", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::read_link", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::write", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::remove_file", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::remove_dir_all", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::create_dir_all", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::rename", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::copy", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::metadata", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::symlink_metadata", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::canonicalize", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::set_permissions", reason = "Subprocess adapter does not need filesystem access" },
+    { path = "std::fs::hard_link", reason = "Subprocess adapter does not need filesystem access" },
+
+    # -- HTTP client construction --
+    { path = "reqwest::Client::new", reason = "Subprocess adapter does not make HTTP calls" },
+    { path = "reqwest::Client::builder", reason = "Subprocess adapter does not make HTTP calls" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES (workspace bans + global state bans)
+# =============================================================================
+
+disallowed-types = [
+    # -- Collections --
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -- Synchronization --
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -- Filesystem --
+    { path = "std::fs::File", reason = "Subprocess adapter does not need direct file handle construction" },
+
+    # -- Global state (not allowed in adapter crates) --
+    { path = "std::sync::LazyLock", reason = "Subprocess adapter receives config via injection -- no global state allowed" },
+    { path = "std::sync::OnceLock", reason = "Subprocess adapter receives config via injection -- no global state allowed" },
+    { path = "once_cell::sync::OnceCell", reason = "Subprocess adapter receives config via injection -- no global state allowed" },
+    { path = "once_cell::sync::Lazy", reason = "Subprocess adapter receives config via injection -- no global state allowed" },
+]
