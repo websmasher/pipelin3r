@@ -41,11 +41,33 @@ pub trait CircuitBreaker: Send + Sync {
 
 /// Bulkhead — concurrency limiter that caps the number of simultaneous
 /// executions per key.
+///
+/// # Contract
+///
+/// **Callers MUST pair every successful [`acquire`](Bulkhead::acquire) with
+/// exactly one [`release`](Bulkhead::release) for the same key.** Failing to
+/// release leaks a permit (the key's concurrency slot is permanently consumed).
+/// Calling `release` without a matching `acquire` inflates the permit count
+/// beyond `max_concurrent`, effectively disabling the concurrency limit for
+/// that key.
+///
+/// The trait deliberately uses an acquire/release pair rather than an RAII guard
+/// because the permit lifetime often spans `.await` points across multiple
+/// functions (e.g., acquire in middleware, release in a response finalizer).
+/// An RAII guard would require carrying the guard through the entire async call
+/// chain, which is ergonomically impractical for most middleware patterns.
 pub trait Bulkhead: Send + Sync {
     /// Acquire a concurrency permit for the given key.
     ///
     /// Returns `Ok(())` if a permit was acquired, or
     /// [`Limit3rError::BulkheadFull`] if the bulkhead is saturated.
+    ///
+    /// # Permit lifecycle
+    ///
+    /// A successful return means one permit has been consumed. The caller
+    /// **must** call [`release`](Bulkhead::release) with the same key when the
+    /// protected work is complete (including on error paths). Dropping the
+    /// result without releasing will permanently leak the permit.
     fn acquire(
         &self,
         key: &str,
@@ -53,6 +75,13 @@ pub trait Bulkhead: Send + Sync {
     ) -> impl Future<Output = Result<(), Limit3rError>> + Send;
 
     /// Release a previously acquired concurrency permit for the given key.
+    ///
+    /// # Safety contract
+    ///
+    /// This must only be called after a successful [`acquire`](Bulkhead::acquire)
+    /// for the same key. Calling `release` without a prior `acquire` will add
+    /// a spurious permit, allowing more concurrent executions than
+    /// `max_concurrent`.
     fn release(&self, key: &str);
 }
 
@@ -75,5 +104,5 @@ pub trait RetryExecutor: Send + Sync {
         F: Fn() -> Fut + Send + Sync,
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
-        E: From<Limit3rError> + Send;
+        E: From<Limit3rError> + core::fmt::Display + Send;
 }

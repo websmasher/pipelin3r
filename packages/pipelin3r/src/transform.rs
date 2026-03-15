@@ -6,11 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::PipelineError;
+
 /// Input/output pair: a file path and its byte content.
 type FilePair = (PathBuf, Vec<u8>);
 
 /// Boxed transform function type.
-type TransformFn = Box<dyn FnOnce(Vec<FilePair>) -> anyhow::Result<Vec<FilePair>> + Send>;
+type TransformFn = Box<dyn FnOnce(Vec<FilePair>) -> Result<Vec<FilePair>, PipelineError> + Send>;
 
 /// Builder for a pure-function transform step.
 ///
@@ -59,7 +61,7 @@ impl TransformBuilder {
     /// `(output_path, content)` pairs to write to disk.
     pub fn apply<F>(mut self, f: F) -> Self
     where
-        F: FnOnce(Vec<FilePair>) -> anyhow::Result<Vec<FilePair>> + Send + 'static,
+        F: FnOnce(Vec<FilePair>) -> Result<Vec<FilePair>, PipelineError> + Send + 'static,
     {
         self.transform_fn = Some(Box::new(f));
         self
@@ -78,16 +80,23 @@ impl TransformBuilder {
     /// - Any input file cannot be read
     /// - The transform function returns an error
     /// - Any output file cannot be written
-    pub fn execute(self) -> anyhow::Result<TransformResult> {
+    pub fn execute(self) -> Result<TransformResult, PipelineError> {
         let transform_fn = self
             .transform_fn
-            .ok_or_else(|| anyhow::anyhow!("transform '{}': no apply function set", self.name))?;
+            .ok_or_else(|| PipelineError::Transform(format!(
+                "'{}': no apply function set", self.name
+            )))?;
 
         // Read all input files.
         let mut inputs = Vec::with_capacity(self.input_files.len());
         for path in &self.input_files {
-            let content = std::fs::read(path)
-                .map_err(|e| anyhow::anyhow!("transform '{}': failed to read {}: {e}", self.name, path.display()))?;
+            let content = std::fs::read(path).map_err(|e| {
+                PipelineError::Transform(format!(
+                    "'{}': failed to read {}: {e}",
+                    self.name,
+                    path.display()
+                ))
+            })?;
             inputs.push((path.clone(), content));
         }
         let files_read = inputs.len();
@@ -106,20 +115,20 @@ impl TransformBuilder {
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
                     std::fs::create_dir_all(parent).map_err(|e| {
-                        anyhow::anyhow!(
-                            "transform '{}': failed to create directory {}: {e}",
+                        PipelineError::Transform(format!(
+                            "'{}': failed to create directory {}: {e}",
                             self.name,
                             parent.display()
-                        )
+                        ))
                     })?;
                 }
             }
             std::fs::write(path, content).map_err(|e| {
-                anyhow::anyhow!(
-                    "transform '{}': failed to write {}: {e}",
+                PipelineError::Transform(format!(
+                    "'{}': failed to write {}: {e}",
                     self.name,
                     path.display()
-                )
+                ))
             })?;
         }
 

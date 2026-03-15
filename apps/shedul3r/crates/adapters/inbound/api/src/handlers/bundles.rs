@@ -4,7 +4,12 @@
 //! - `POST /api/bundles` — upload a multipart file bundle
 //! - `GET /api/bundles/:id/files/*path` — download a single file from a bundle
 //! - `DELETE /api/bundles/:id` — delete a bundle and clean up its temp directory
+//!
+//! Known limitations:
+//! - Orphaned `TempDir`s are not reaped if the server crashes before deletion.
+//!   A TTL-based reaper should be added in a future iteration.
 
+use std::path::Component;
 use std::sync::Arc;
 
 use axum::Router;
@@ -17,6 +22,36 @@ use axum::routing::{delete, get, post};
 
 use crate::AppError;
 use crate::state::AppState;
+
+/// Maximum number of files allowed in a single bundle upload.
+const MAX_FILES_PER_BUNDLE: usize = 100;
+
+/// Maximum size of a single file field in bytes (10 MB).
+const MAX_FIELD_SIZE: usize = 10_000_000;
+
+/// Validate that a bundle path contains only normal components.
+///
+/// Rejects absolute paths (`/foo`), parent traversal (`../foo`), root (`/`),
+/// and Windows prefix (`C:\`). Only `Component::Normal` segments are allowed.
+fn validate_bundle_path(name: &str) -> Result<(), AppError> {
+    if name.is_empty() {
+        return Err(AppError::BadRequest(
+            "bundle path is empty".to_owned(),
+        ));
+    }
+    let path = std::path::Path::new(name);
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => {} // OK — plain filename or directory name
+            _ => {
+                return Err(AppError::BadRequest(format!(
+                    "invalid bundle path: {name}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Builds an Axum router with all bundle-related endpoints.
 pub fn bundle_router() -> Router<Arc<AppState>> {
@@ -35,27 +70,29 @@ async fn upload(
         .map_err(|e| AppError::Internal(format!("failed to create temp dir: {e}")))?;
 
     let base = temp_dir.path().to_path_buf();
+    let mut file_count: usize = 0;
 
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(format!("multipart read error: {e}")))?
     {
+        file_count = file_count.checked_add(1).ok_or_else(|| {
+            AppError::BadRequest("file count overflow".to_owned())
+        })?;
+        if file_count > MAX_FILES_PER_BUNDLE {
+            return Err(AppError::BadRequest(format!(
+                "too many files: maximum {MAX_FILES_PER_BUNDLE} per bundle"
+            )));
+        }
+
         let name = field
             .name()
             .ok_or_else(|| AppError::BadRequest("field missing name".to_owned()))?
             .to_owned();
 
-        if name.is_empty() {
-            return Err(AppError::BadRequest("field name is empty".to_owned()));
-        }
-
-        // Reject path traversal attempts.
-        if name.contains("..") {
-            return Err(AppError::BadRequest(
-                "path traversal not allowed".to_owned(),
-            ));
-        }
+        // Validate the path: only normal components allowed (no `..`, `/`, `\`, etc.).
+        validate_bundle_path(&name)?;
 
         let file_path = base.join(&name);
 
@@ -71,12 +108,22 @@ async fn upload(
             .await
             .map_err(|e| AppError::BadRequest(format!("failed to read field bytes: {e}")))?;
 
+        if bytes.len() > MAX_FIELD_SIZE {
+            return Err(AppError::BadRequest(format!(
+                "field too large: {} bytes exceeds {MAX_FIELD_SIZE} byte limit",
+                bytes.len()
+            )));
+        }
+
         tokio::fs::write(&file_path, &bytes)
             .await
             .map_err(|e| AppError::Internal(format!("failed to write file: {e}")))?;
     }
 
     let bundle_id = uuid::Uuid::new_v4().to_string();
+    // NOTE: The path is intentionally included in the response. The SDK's
+    // `BundleHandle` uses it as `working_directory` when submitting tasks.
+    // It leaks the temp dir structure but not sensitive data.
     let bundle_path = base.display().to_string();
 
     let entry = crate::state::BundleEntry::new(temp_dir);
@@ -108,12 +155,8 @@ async fn download(
     let file_path = params.path;
     let id = params.id;
 
-    // Reject path traversal attempts.
-    if file_path.contains("..") {
-        return Err(AppError::BadRequest(
-            "path traversal not allowed".to_owned(),
-        ));
-    }
+    // Validate the path: only normal components allowed (no `..`, `/`, `\`, etc.).
+    validate_bundle_path(&file_path)?;
 
     let bundle_base = state
         .bundles
@@ -338,6 +381,124 @@ mod tests {
             download_resp.status(),
             404,
             "download after delete should return 404"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_absolute_path() {
+        let app = test_app();
+
+        let mp = multipart_body("/etc/passwd", b"pwned");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/bundles")
+            .header("content-type", &mp.content_type)
+            .body(Body::from(mp.body))
+            .unwrap_or_default();
+
+        let resp = app.oneshot(req).await.unwrap_or_default();
+        assert_eq!(resp.status(), 400, "absolute path should be rejected");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_parent_traversal() {
+        let app = test_app();
+
+        let mp = multipart_body("../etc/passwd", b"pwned");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/bundles")
+            .header("content-type", &mp.content_type)
+            .body(Body::from(mp.body))
+            .unwrap_or_default();
+
+        let resp = app.oneshot(req).await.unwrap_or_default();
+        assert_eq!(resp.status(), 400, "parent traversal should be rejected");
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_mixed_traversal() {
+        let app = test_app();
+
+        let mp = multipart_body("foo/../bar", b"pwned");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/bundles")
+            .header("content-type", &mp.content_type)
+            .body(Body::from(mp.body))
+            .unwrap_or_default();
+
+        let resp = app.oneshot(req).await.unwrap_or_default();
+        assert_eq!(resp.status(), 400, "mixed traversal should be rejected");
+    }
+
+    #[tokio::test]
+    async fn upload_accepts_nested_path() {
+        let app = test_app();
+
+        let mp = multipart_body("src/lib.rs", b"fn main() {}");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/bundles")
+            .header("content-type", &mp.content_type)
+            .body(Body::from(mp.body))
+            .unwrap_or_default();
+
+        let resp = app.oneshot(req).await.unwrap_or_default();
+        assert_eq!(resp.status(), 200, "nested normal path should be accepted");
+    }
+
+    #[tokio::test]
+    async fn download_rejects_traversal() {
+        let app = test_app();
+
+        // First upload a valid file so the bundle exists.
+        let mp = multipart_body("test.txt", b"hello");
+
+        let upload_req = Request::builder()
+            .method("POST")
+            .uri("/api/bundles")
+            .header("content-type", &mp.content_type)
+            .body(Body::from(mp.body))
+            .unwrap_or_default();
+
+        let upload_resp = app
+            .clone()
+            .oneshot(upload_req)
+            .await
+            .unwrap_or_default();
+
+        let upload_body = upload_resp
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_default()
+            .to_bytes();
+        let upload_json: serde_json::Value =
+            serde_json::from_slice(&upload_body).unwrap_or_default();
+        let bundle_id = upload_json
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+
+        // Attempt to download with path traversal.
+        let download_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/bundles/{bundle_id}/files/../../../etc/passwd"
+            ))
+            .body(Body::empty())
+            .unwrap_or_default();
+
+        let download_resp = app.oneshot(download_req).await.unwrap_or_default();
+        assert_eq!(
+            download_resp.status(),
+            400,
+            "download with traversal should be rejected"
         );
     }
 

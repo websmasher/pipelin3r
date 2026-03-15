@@ -1,10 +1,12 @@
 //! HTTP client for the shedul3r task execution API.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::SdkError;
 
 /// Configuration for the shedul3r [`Client`].
 ///
@@ -19,6 +21,8 @@ pub struct ClientConfig {
     pub poll_interval: Duration,
     /// Initial delay before file polling starts. Default: 30 s.
     pub poll_initial_delay: Duration,
+    /// Maximum total time to spend polling for a file. Default: 45 minutes.
+    pub max_poll_duration: Duration,
 }
 
 impl Default for ClientConfig {
@@ -28,6 +32,7 @@ impl Default for ClientConfig {
             timeout: Duration::from_millis(2_700_000),
             poll_interval: Duration::from_millis(10_000),
             poll_initial_delay: Duration::from_millis(30_000),
+            max_poll_duration: Duration::from_millis(2_700_000),
         }
     }
 }
@@ -54,7 +59,7 @@ pub struct TaskPayload {
     pub working_directory: Option<String>,
     /// Optional environment variables to inject.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub environment: Option<HashMap<String, String>>,
+    pub environment: Option<BTreeMap<String, String>>,
 }
 
 /// Response from shedul3r after task completion.
@@ -80,7 +85,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the underlying HTTP client cannot be built.
-    pub fn new(config: ClientConfig) -> anyhow::Result<Self> {
+    pub fn new(config: ClientConfig) -> Result<Self, SdkError> {
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()?;
@@ -92,7 +97,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the underlying HTTP client cannot be built.
-    pub fn with_defaults() -> anyhow::Result<Self> {
+    pub fn with_defaults() -> Result<Self, SdkError> {
         Self::new(ClientConfig::default())
     }
 
@@ -112,7 +117,7 @@ impl Client {
     ///
     /// Returns an error only for unrecoverable issues (e.g. serialisation
     /// failure). HTTP failures are reported via [`TaskResult::success`] `= false`.
-    pub async fn submit_task(&self, payload: &TaskPayload) -> anyhow::Result<TaskResult> {
+    pub async fn submit_task(&self, payload: &TaskPayload) -> Result<TaskResult, SdkError> {
         let url = format!("{}/api/tasks", self.config.base_url);
         http_call(&self.http, &url, payload, None).await
     }
@@ -134,7 +139,7 @@ impl Client {
         &self,
         payload: &TaskPayload,
         expected_output: &Path,
-    ) -> anyhow::Result<TaskResult> {
+    ) -> Result<TaskResult, SdkError> {
         // Remove stale output so the poller only fires on fresh writes.
         let _ = std::fs::remove_file(expected_output);
 
@@ -146,6 +151,7 @@ impl Client {
             &output_owned,
             self.config.poll_initial_delay,
             self.config.poll_interval,
+            self.config.max_poll_duration,
         );
 
         tokio::select! {
@@ -185,7 +191,7 @@ async fn http_call(
     url: &str,
     payload: &TaskPayload,
     expected_output: Option<&Path>,
-) -> anyhow::Result<TaskResult> {
+) -> Result<TaskResult, SdkError> {
     let result = http.post(url).json(payload).send().await;
 
     let try_file_recovery = |expected: Option<&Path>| -> Option<TaskResult> {
@@ -244,16 +250,25 @@ async fn http_call(
     }
 }
 
-/// Poll for a file to appear on disk, with an initial delay.
+/// Poll for a file to appear on disk, with an initial delay and a maximum duration.
+///
+/// Returns `Ok(())` when the file appears, or `Err(SdkError::PollTimeout)` when
+/// the total elapsed time exceeds `max_duration`.
 async fn poll_for_file(
     file_path: &Path,
     initial_delay: Duration,
     interval: Duration,
-) -> anyhow::Result<()> {
+    max_duration: Duration,
+) -> Result<(), SdkError> {
+    let start = tokio::time::Instant::now();
     tokio::time::sleep(initial_delay).await;
     loop {
         if file_path.exists() {
             return Ok(());
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= max_duration {
+            return Err(SdkError::PollTimeout { elapsed });
         }
         tokio::time::sleep(interval).await;
     }
@@ -338,6 +353,11 @@ mod tests {
             Duration::from_millis(30_000),
             "default poll initial delay is 30 seconds"
         );
+        assert_eq!(
+            cfg.max_poll_duration,
+            Duration::from_millis(2_700_000),
+            "default max poll duration is 45 minutes"
+        );
     }
 
     #[test]
@@ -347,8 +367,32 @@ mod tests {
             timeout: Duration::from_secs(60),
             poll_interval: Duration::from_secs(1),
             poll_initial_delay: Duration::from_secs(5),
+            max_poll_duration: Duration::from_secs(120),
         };
         assert_eq!(cfg.base_url, "http://example.com:8080", "custom base URL");
         assert_eq!(cfg.timeout, Duration::from_secs(60), "custom timeout");
+        assert_eq!(
+            cfg.max_poll_duration,
+            Duration::from_secs(120),
+            "custom max poll duration"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_for_file_timeout_returns_error() {
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("nonexistent.txt");
+
+        let result = poll_for_file(
+            &path,
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(result.is_err(), "should timeout when file does not appear");
+        let is_poll_timeout = matches!(result, Err(SdkError::PollTimeout { .. }));
+        assert!(is_poll_timeout, "should be PollTimeout variant");
     }
 }

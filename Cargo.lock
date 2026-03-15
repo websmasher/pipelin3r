@@ -733,10 +733,10 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 name = "pipelin3r"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "serde_json",
  "shedul3r-rs-sdk",
  "tempfile",
+ "thiserror",
  "tokio",
  "toml",
  "tracing",
@@ -1026,9 +1026,11 @@ dependencies = [
 name = "shedul3r-rs-sdk"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "reqwest",
  "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
  "tokio",
 ]
 
@@ -1186,7 +1188,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

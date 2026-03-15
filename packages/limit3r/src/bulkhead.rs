@@ -18,6 +18,9 @@ struct BulkheadState {
     max_concurrent: u32,
 }
 
+/// Maximum number of keys tracked before idle entries are evicted.
+const MAX_TRACKED_KEYS: usize = 10_000;
+
 /// Type alias to reduce type complexity for the inner state map.
 type StateMap = BTreeMap<String, BulkheadState>;
 
@@ -98,6 +101,19 @@ impl InMemoryBulkhead {
 
 impl Bulkhead for InMemoryBulkhead {
     async fn acquire(&self, key: &str, config: &BulkheadConfig) -> Result<(), Limit3rError> {
+        // Evict keys with no outstanding permits when the map exceeds the size limit.
+        {
+            let map = self.state.read();
+            if map.len() > MAX_TRACKED_KEYS {
+                drop(map);
+                let mut map = self.state.write();
+                map.retain(|_k, entry| {
+                    entry.semaphore.available_permits()
+                        < usize::try_from(entry.max_concurrent).unwrap_or(usize::MAX)
+                });
+            }
+        }
+
         let semaphore = self.get_or_create_semaphore(key, config);
 
         let result = tokio::time::timeout(config.max_wait_duration, semaphore.acquire()).await;

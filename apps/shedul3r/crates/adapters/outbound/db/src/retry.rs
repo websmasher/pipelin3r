@@ -66,7 +66,7 @@ impl RetryExecutor for TokioRetryExecutor {
         F: Fn() -> Fut + Send + Sync,
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
-        E: From<Limit3rError> + Send,
+        E: From<Limit3rError> + std::fmt::Display + Send,
     {
         let mut attempt: u32 = 0;
         loop {
@@ -75,14 +75,17 @@ impl RetryExecutor for TokioRetryExecutor {
             match result {
                 Ok(value) => return Ok(value),
                 Err(err) => {
+                    let last_message = err.to_string();
                     attempt = attempt.saturating_add(1);
                     if attempt >= config.max_attempts {
                         tracing::warn!(
                             attempts = config.max_attempts,
+                            %last_message,
                             "All retry attempts exhausted",
                         );
                         return Err(E::from(Limit3rError::RetryExhausted {
                             attempts: config.max_attempts,
+                            last_message,
                         }));
                     }
                     let delay = compute_delay(config, attempt);
@@ -92,7 +95,6 @@ impl RetryExecutor for TokioRetryExecutor {
                         max_attempts = config.max_attempts,
                         "Retrying after failure",
                     );
-                    // Discard the intermediate error — we'll retry
                     drop(err);
                     tokio::time::sleep(delay).await;
                 }

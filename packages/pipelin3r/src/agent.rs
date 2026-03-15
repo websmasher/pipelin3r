@@ -1,6 +1,6 @@
 //! Agent builder for single and batch LLM agent invocations.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,6 +9,7 @@ use shedul3r_rs_sdk::TaskPayload;
 
 use crate::auth::{merge_env, Auth};
 use crate::bundle::Bundle;
+use crate::error::PipelineError;
 use crate::executor::{extract_step_name, Executor};
 use crate::model::Model;
 use crate::pool::run_pool;
@@ -28,11 +29,11 @@ impl AgentResult {
     ///
     /// # Errors
     /// Returns an error containing the output text if the agent failed.
-    pub fn require_success(&self) -> anyhow::Result<&Self> {
+    pub fn require_success(&self) -> Result<&Self, PipelineError> {
         if self.success {
             Ok(self)
         } else {
-            anyhow::bail!("agent failed: {}", self.output);
+            Err(PipelineError::Other(format!("agent failed: {}", self.output)))
         }
     }
 }
@@ -212,13 +213,14 @@ impl<'a> AgentBuilder<'a> {
     ///
     /// # Errors
     /// Returns an error if task YAML building fails or the SDK call fails.
-    pub async fn execute(self) -> anyhow::Result<AgentResult> {
+    #[allow(clippy::too_many_lines)] // reason: splitting this further would hurt readability
+    pub async fn execute(self) -> Result<AgentResult, PipelineError> {
         let model_str = self.resolve_model_string();
         let timeout_str = self.timeout.map(format_duration);
 
         let prompt = self
             .prompt
-            .ok_or_else(|| anyhow::anyhow!("agent prompt is required"))?;
+            .ok_or_else(|| PipelineError::Config(String::from("agent prompt is required")))?;
 
         let task_yaml = build_task_yaml(&TaskConfig {
             name: self.name.clone(),
@@ -233,7 +235,10 @@ impl<'a> AgentBuilder<'a> {
 
         // Resolve auth: builder override > executor default > empty.
         let auth = self.auth.or_else(|| self.executor.default_auth());
-        let auth_env = auth.map_or_else(HashMap::new, Auth::to_env);
+        let auth_env = auth
+            .map(Auth::to_env)
+            .transpose()?
+            .unwrap_or_default();
 
         let env = merge_env(auth_env, None);
 
@@ -284,53 +289,56 @@ impl<'a> AgentBuilder<'a> {
             environment: env,
         };
 
-        let result = if let Some(expected) = &self.expected_output {
-            self.executor
-                .sdk_client()
-                .submit_task_with_recovery(&payload, expected)
-                .await?
-        } else {
-            self.executor.sdk_client().submit_task(&payload).await?
-        };
+        // Wrap remote execution in a block that always cleans up the bundle.
+        let execution_result = async {
+            let result = if let Some(expected) = &self.expected_output {
+                self.executor
+                    .sdk_client()
+                    .submit_task_with_recovery(&payload, expected)
+                    .await?
+            } else {
+                self.executor.sdk_client().submit_task(&payload).await?
+            };
 
-        // Download expected outputs from remote bundle.
-        if let Some(ref handle) = bundle_handle {
-            if let Some(ref bundle) = self.bundle_data {
-                for output_path in bundle.expected_output_paths() {
-                    let bytes = self
-                        .executor
-                        .sdk_client()
-                        .download_file(&handle.id, output_path)
-                        .await?;
+            // Download expected outputs from remote bundle.
+            if let Some(ref handle) = bundle_handle {
+                if let Some(ref bundle) = self.bundle_data {
+                    for output_path in bundle.expected_output_paths() {
+                        let bytes = self
+                            .executor
+                            .sdk_client()
+                            .download_file(&handle.id, output_path)
+                            .await?;
 
-                    // Write downloaded file to the local working directory or temp.
-                    let local_dir = self
-                        .working_dir
-                        .as_deref()
-                        .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
-                    let local_path = local_dir.join(output_path);
-                    if let Some(parent) = local_path.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        // Write downloaded file to the local working directory or temp.
+                        let local_dir = self
+                            .working_dir
+                            .as_deref()
+                            .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
+                        let local_path = local_dir.join(output_path);
+                        if let Some(parent) = local_path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(&local_path, &bytes)?;
                     }
-                    std::fs::write(&local_path, &bytes)?;
                 }
             }
 
-            // Clean up remote bundle.
-            let delete_result = self
-                .executor
-                .sdk_client()
-                .delete_bundle(&handle.id)
-                .await;
-            if let Err(e) = delete_result {
+            Ok::<AgentResult, PipelineError>(AgentResult {
+                success: result.success,
+                output: result.output,
+            })
+        }
+        .await;
+
+        // Always clean up remote bundle, regardless of success/failure.
+        if let Some(ref handle) = bundle_handle {
+            if let Err(e) = self.executor.sdk_client().delete_bundle(&handle.id).await {
                 tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
             }
         }
 
-        Ok(AgentResult {
-            success: result.success,
-            output: result.output,
-        })
+        execution_result
     }
 }
 
@@ -351,6 +359,9 @@ pub struct AgentBatchBuilder<'a, T> {
     mapper: Option<Box<dyn Fn(T) -> AgentTask + Send + Sync>>,
 }
 
+/// Alias for the shared result store used during batch execution.
+type BatchResultStore = Arc<Mutex<Vec<Option<Result<AgentResult, PipelineError>>>>>;
+
 /// Shared configuration extracted from the batch builder for use in pool tasks.
 #[derive(Clone)]
 struct BatchConfig {
@@ -358,7 +369,7 @@ struct BatchConfig {
     model: Option<String>,
     timeout: Option<String>,
     tools: Option<String>,
-    default_auth_env: HashMap<String, String>,
+    default_auth_env: BTreeMap<String, String>,
 }
 
 impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
@@ -390,17 +401,20 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
     ///
     /// # Errors
     /// Returns an error if no `for_each` mapper was set.
-    pub async fn execute(self) -> anyhow::Result<Vec<anyhow::Result<AgentResult>>> {
+    pub async fn execute(self) -> Result<Vec<Result<AgentResult, PipelineError>>, PipelineError> {
         let model_str = self.resolve_model_string();
         let timeout_str = self.timeout.map(format_duration);
 
         let mapper = self
             .mapper
-            .ok_or_else(|| anyhow::anyhow!("batch requires a for_each mapper"))?;
+            .ok_or_else(|| PipelineError::Config(String::from("batch requires a for_each mapper")))?;
 
         // Resolve default auth once for all tasks.
         let default_auth = self.auth.or_else(|| self.executor.default_auth());
-        let default_auth_env = default_auth.map_or_else(HashMap::new, Auth::to_env);
+        let default_auth_env = default_auth
+            .map(Auth::to_env)
+            .transpose()?
+            .unwrap_or_default();
 
         let config = BatchConfig {
             name: self.name.clone(),
@@ -429,7 +443,7 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
         }
 
         // Real execution: use run_pool with result capture via Arc<Mutex<Vec>>.
-        let results_store: Arc<Mutex<Vec<Option<anyhow::Result<AgentResult>>>>> =
+        let results_store: BatchResultStore =
             Arc::new(Mutex::new((0..total).map(|_| None).collect()));
 
         let client = self.executor.sdk_client().clone();
@@ -458,13 +472,13 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
         // Extract results from the store. All pool tasks have completed at this
         // point, so we are the sole owner of the Arc.
         let inner = Arc::try_unwrap(results_store)
-            .map_err(|_| anyhow::anyhow!("batch results Arc still shared after pool completion"))?
+            .map_err(|_| PipelineError::Other(String::from("batch results Arc still shared after pool completion")))?
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         Ok(inner
             .into_iter()
-            .map(|opt| opt.unwrap_or_else(|| Err(anyhow::anyhow!("batch task result missing"))))
+            .map(|opt| opt.unwrap_or_else(|| Err(PipelineError::Other(String::from("batch task result missing")))))
             .collect())
     }
 }
@@ -476,7 +490,7 @@ fn execute_dry_run_capture(
     prompt: &str,
     expected_output: Option<&Path>,
     working_dir: Option<&Path>,
-) -> anyhow::Result<AgentResult> {
+) -> Result<AgentResult, PipelineError> {
     let mut guard = dry_run_mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -498,7 +512,9 @@ fn execute_dry_run_capture(
     });
     std::fs::write(
         capture_dir.join("meta.json"),
-        serde_json::to_string_pretty(&meta)?,
+        serde_json::to_string_pretty(&meta).map_err(|e| {
+            PipelineError::Other(format!("failed to serialize meta: {e}"))
+        })?,
     )?;
 
     tracing::info!("[dry-run] Captured to {}", capture_dir.display());
@@ -513,11 +529,11 @@ fn execute_batch_task_dry_run(
     task: &AgentTask,
     config: &BatchConfig,
     dry_run_mutex: &std::sync::Mutex<crate::executor::DryRunConfig>,
-) -> anyhow::Result<AgentResult> {
+) -> Result<AgentResult, PipelineError> {
     let prompt = task
         .prompt
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("agent task prompt is required"))?;
+        .ok_or_else(|| PipelineError::Config(String::from("agent task prompt is required")))?;
 
     let task_yaml = build_task_yaml(&TaskConfig {
         name: config.name.clone(),
@@ -539,17 +555,17 @@ fn execute_batch_task_dry_run(
     )
 }
 
-/// Execute a single task via the SDK client.
+/// Execute a single task via the SDK client, with bundle cleanup on failure.
 async fn execute_single_task(
     task: &AgentTask,
     config: &BatchConfig,
     client: &shedul3r_rs_sdk::Client,
     remote: bool,
-) -> anyhow::Result<AgentResult> {
+) -> Result<AgentResult, PipelineError> {
     let prompt = task
         .prompt
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("agent task prompt is required"))?;
+        .ok_or_else(|| PipelineError::Config(String::from("agent task prompt is required")))?;
 
     let task_yaml = build_task_yaml(&TaskConfig {
         name: config.name.clone(),
@@ -564,7 +580,7 @@ async fn execute_single_task(
 
     // Resolve auth: task override > batch default.
     let auth_env = if let Some(ref auth) = task.auth {
-        auth.to_env()
+        auth.to_env()?
     } else {
         config.default_auth_env.clone()
     };
@@ -600,41 +616,48 @@ async fn execute_single_task(
         environment: env,
     };
 
-    let result = if let Some(expected) = &task.expected_output {
-        client.submit_task_with_recovery(&payload, expected).await?
-    } else {
-        client.submit_task(&payload).await?
-    };
+    // Wrap execution in a block that always cleans up the bundle.
+    let execution_result = async {
+        let result = if let Some(expected) = &task.expected_output {
+            client.submit_task_with_recovery(&payload, expected).await?
+        } else {
+            client.submit_task(&payload).await?
+        };
 
-    // Download expected outputs from remote bundle.
-    if let Some(ref handle) = bundle_handle {
-        if let Some(ref bundle) = task.bundle_data {
-            for output_path in bundle.expected_output_paths() {
-                let bytes = client.download_file(&handle.id, output_path).await?;
+        // Download expected outputs from remote bundle.
+        if let Some(ref handle) = bundle_handle {
+            if let Some(ref bundle) = task.bundle_data {
+                for output_path in bundle.expected_output_paths() {
+                    let bytes = client.download_file(&handle.id, output_path).await?;
 
-                let local_dir = task
-                    .working_dir
-                    .clone()
-                    .unwrap_or_else(std::env::temp_dir);
-                let local_path = local_dir.join(output_path);
-                if let Some(parent) = local_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    let local_dir = task
+                        .working_dir
+                        .clone()
+                        .unwrap_or_else(std::env::temp_dir);
+                    let local_path = local_dir.join(output_path);
+                    if let Some(parent) = local_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&local_path, &bytes)?;
                 }
-                std::fs::write(&local_path, &bytes)?;
             }
         }
 
-        // Clean up remote bundle.
-        let delete_result = client.delete_bundle(&handle.id).await;
-        if let Err(e) = delete_result {
+        Ok::<AgentResult, PipelineError>(AgentResult {
+            success: result.success,
+            output: result.output,
+        })
+    }
+    .await;
+
+    // Always clean up remote bundle, regardless of success/failure.
+    if let Some(ref handle) = bundle_handle {
+        if let Err(e) = client.delete_bundle(&handle.id).await {
             tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
         }
     }
 
-    Ok(AgentResult {
-        success: result.success,
-        output: result.output,
-    })
+    execution_result
 }
 
 /// Format a `Duration` as a human-readable timeout string for task YAML.
@@ -679,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)] // reason: test assertion on error path
+    #[allow(clippy::unwrap_used)] // reason: test assertion on known-Err value
     fn agent_result_require_success_err() {
         let result = AgentResult {
             success: false,

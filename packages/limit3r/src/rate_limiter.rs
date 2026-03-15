@@ -1,4 +1,4 @@
-//! Sliding-window token bucket rate limiter backed by in-memory state.
+//! Fixed-window rate limiter backed by in-memory state.
 
 use std::collections::BTreeMap;
 
@@ -7,6 +7,9 @@ use crate::error::Limit3rError;
 use crate::traits::RateLimiter;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
+
+/// Maximum number of keys tracked before stale entries are evicted.
+const MAX_TRACKED_KEYS: usize = 10_000;
 
 /// Per-key state tracking permits consumed in the current time window.
 struct KeyState {
@@ -19,9 +22,9 @@ struct KeyState {
 /// Type alias to reduce type complexity for the inner state map.
 type StateMap = BTreeMap<String, KeyState>;
 
-/// In-memory sliding-window rate limiter.
+/// In-memory fixed-window rate limiter.
 ///
-/// Tracks permit usage per key using a time-windowed counter.
+/// Tracks permit usage per key using a fixed time-window counter.
 /// When the window expires, the counter resets and permits become available
 /// again. If no permits remain in the current window the caller blocks
 /// (up to `timeout_duration`) until the window refreshes.
@@ -45,6 +48,15 @@ impl InMemoryRateLimiter {
     }
 }
 
+/// Remove keys whose time window has expired, keeping the map bounded.
+fn evict_expired_rate_limit_keys(
+    map: &mut StateMap,
+    config: &RateLimitConfig,
+    now: Instant,
+) {
+    map.retain(|_key, entry| now.duration_since(entry.window_start) < config.limit_refresh_period);
+}
+
 impl RateLimiter for InMemoryRateLimiter {
     async fn acquire_permission(
         &self,
@@ -61,6 +73,11 @@ impl RateLimiter for InMemoryRateLimiter {
             let sleep_until = {
                 let mut map = self.state.lock().await;
                 let now = Instant::now();
+
+                // Evict expired windows when the map exceeds the size limit.
+                if map.len() > MAX_TRACKED_KEYS {
+                    evict_expired_rate_limit_keys(&mut map, config, now);
+                }
 
                 let needs_insert = !map.contains_key(key);
                 if needs_insert {

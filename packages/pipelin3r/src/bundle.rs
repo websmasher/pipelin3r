@@ -3,7 +3,7 @@
 //! Bundles are currently written to a local temporary directory. Remote upload
 //! (via SDK bundle endpoints) will be added when the server supports it.
 
-use std::path::PathBuf;
+use crate::error::PipelineError;
 
 /// A collection of files to send alongside an agent invocation.
 #[derive(Debug, Clone)]
@@ -41,21 +41,21 @@ impl Bundle {
         self
     }
 
-    /// Write bundle files to a local temporary directory.
+    /// Write bundle files to a unique temporary directory.
     ///
-    /// Returns the path to the temporary directory.
+    /// Returns a [`tempfile::TempDir`] handle. The directory is automatically
+    /// deleted when the handle is dropped, so the caller must keep it alive
+    /// for as long as the files are needed.
     ///
     /// # Errors
     /// Returns an error if directory creation or file writing fails.
-    pub fn write_to_temp_dir(&self) -> anyhow::Result<PathBuf> {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "pipelin3r-bundle-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_dir)?;
+    pub fn write_to_temp_dir(&self) -> Result<tempfile::TempDir, PipelineError> {
+        let temp_dir = tempfile::tempdir().map_err(|e| {
+            PipelineError::Bundle(format!("failed to create temp dir: {e}"))
+        })?;
 
         for (path, content) in &self.files {
-            let file_path = temp_dir.join(path);
+            let file_path = temp_dir.path().join(path);
             if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -132,14 +132,18 @@ mod tests {
         let result = bundle.write_to_temp_dir();
         assert!(result.is_ok(), "should succeed writing to temp dir");
 
-        let dir = result.unwrap_or_else(|_| PathBuf::new());
-        assert!(dir.join("hello.txt").exists(), "hello.txt should exist");
+        let dir = result.unwrap_or_else(|_| {
+            // Return a dummy TempDir that won't match assertions.
+            tempfile::tempdir().unwrap_or_else(|_| std::process::abort())
+        });
         assert!(
-            dir.join("sub/nested.txt").exists(),
+            dir.path().join("hello.txt").exists(),
+            "hello.txt should exist"
+        );
+        assert!(
+            dir.path().join("sub/nested.txt").exists(),
             "nested file should exist"
         );
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
+        // TempDir cleanup is automatic on drop.
     }
 }

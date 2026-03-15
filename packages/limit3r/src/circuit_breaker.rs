@@ -64,6 +64,9 @@ impl CircuitState {
     }
 }
 
+/// Maximum number of keys tracked before stale entries are evicted.
+const MAX_TRACKED_KEYS: usize = 10_000;
+
 /// Type alias to reduce type complexity for the inner state map.
 type StateMap = BTreeMap<String, CircuitState>;
 
@@ -100,6 +103,14 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
         config: &CircuitBreakerConfig,
     ) -> Result<(), Limit3rError> {
         let mut map = self.state.write();
+
+        // Evict idle closed circuits when the map exceeds the size limit.
+        if map.len() > MAX_TRACKED_KEYS {
+            map.retain(|_k, circuit| {
+                !(circuit.state == State::Closed && circuit.results.is_empty())
+            });
+        }
+
         let needs_insert = !map.contains_key(key);
         if needs_insert {
             let _prev = map.insert(key.to_owned(), CircuitState::new());

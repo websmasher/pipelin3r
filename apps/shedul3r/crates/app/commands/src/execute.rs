@@ -321,10 +321,10 @@ fn exec_result_to_response(
 ) -> TaskResponse {
     match result {
         Ok(r) => build_task_response(r, started_at, elapsed),
-        Err(SchedulrError::Resilience(limit3r::Limit3rError::RetryExhausted { attempts })) => {
+        Err(SchedulrError::Resilience(limit3r::Limit3rError::RetryExhausted { attempts, ref last_message })) => {
             TaskResponse {
                 success: false,
-                output: format!("All {attempts} retry attempts exhausted"),
+                output: format!("All {attempts} retry attempts exhausted (last error: {last_message})"),
                 metadata: ExecutionMetadata {
                     started_at,
                     elapsed,

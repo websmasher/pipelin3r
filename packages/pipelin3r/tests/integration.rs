@@ -1,9 +1,10 @@
 //! Integration tests for pipelin3r: agent dry-run and transform flows.
 
 // Suppress unused-crate-dependencies for test binary (these are used by the library).
-use anyhow as _;
 use serde_json as _;
 use shedul3r_rs_sdk as _;
+use tempfile as _;
+use thiserror as _;
 use toml as _;
 use tracing as _;
 

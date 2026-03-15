@@ -5,6 +5,8 @@
 
 use serde::Deserialize;
 
+use crate::error::SdkError;
+
 /// Opaque handle returned after uploading a bundle.
 #[derive(Debug, Clone)]
 pub struct BundleHandle {
@@ -34,7 +36,7 @@ impl super::Client {
     pub async fn upload_bundle(
         &self,
         files: &[(&str, &[u8])],
-    ) -> anyhow::Result<BundleHandle> {
+    ) -> Result<BundleHandle, SdkError> {
         let url = format!("{}/api/bundles", self.base_url());
 
         let mut form = reqwest::multipart::Form::new();
@@ -54,10 +56,10 @@ impl super::Client {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "bundle upload failed (HTTP {status}): {}",
+            return Err(SdkError::Bundle(format!(
+                "upload failed (HTTP {status}): {}",
                 super::client::truncate_str(&body, 500)
-            );
+            )));
         }
 
         let parsed: UploadResponse = resp.json().await?;
@@ -78,7 +80,7 @@ impl super::Client {
         &self,
         bundle_id: &str,
         path: &str,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, SdkError> {
         let url = format!(
             "{}/api/bundles/{}/files/{}",
             self.base_url(), bundle_id, path
@@ -89,10 +91,10 @@ impl super::Client {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "bundle download failed (HTTP {status}): {}",
+            return Err(SdkError::Bundle(format!(
+                "download failed (HTTP {status}): {}",
                 super::client::truncate_str(&body, 500)
-            );
+            )));
         }
 
         let bytes = resp.bytes().await?;
@@ -105,7 +107,7 @@ impl super::Client {
     ///
     /// Returns an error if the HTTP request fails or the server returns a
     /// non-success status.
-    pub async fn delete_bundle(&self, bundle_id: &str) -> anyhow::Result<()> {
+    pub async fn delete_bundle(&self, bundle_id: &str) -> Result<(), SdkError> {
         let url = format!(
             "{}/api/bundles/{}",
             self.base_url(), bundle_id
@@ -116,10 +118,10 @@ impl super::Client {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "bundle delete failed (HTTP {status}): {}",
+            return Err(SdkError::Bundle(format!(
+                "delete failed (HTTP {status}): {}",
                 super::client::truncate_str(&body, 500)
-            );
+            )));
         }
 
         Ok(())

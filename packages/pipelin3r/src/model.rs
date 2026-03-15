@@ -48,17 +48,16 @@ impl Model {
             Self::Custom(id) => return id.clone(),
         };
         match provider {
-            Provider::Anthropic | Provider::Custom(_) => String::from(base),
             Provider::OpenRouter => format!("anthropic/{base}"),
             Provider::Bedrock => format!("anthropic.{base}-v1"),
-            Provider::Vertex => String::from(base),
+            Provider::Anthropic | Provider::Custom(_) | Provider::Vertex => String::from(base),
         }
     }
 
     /// Get the TOML configuration key for this model variant.
     ///
     /// Returns `None` for `Custom` models (they bypass configuration).
-    fn config_key(&self) -> Option<&str> {
+    const fn config_key(&self) -> Option<&str> {
         match self {
             Self::Opus4_6 => Some("opus_4_6"),
             Self::Sonnet4_6 => Some("sonnet_4_6"),
@@ -72,7 +71,7 @@ impl Provider {
     /// Get the TOML configuration key for this provider variant.
     ///
     /// Returns `None` for `Custom` providers (they bypass configuration).
-    fn config_key(&self) -> Option<&str> {
+    const fn config_key(&self) -> Option<&str> {
         match self {
             Self::Anthropic => Some("anthropic"),
             Self::OpenRouter => Some("openrouter"),
@@ -99,8 +98,9 @@ impl ModelConfig {
     ///
     /// # Errors
     /// Returns an error if the TOML string cannot be parsed.
-    pub fn from_toml(toml_str: &str) -> anyhow::Result<Self> {
-        let providers: BTreeMap<String, BTreeMap<String, String>> = toml::from_str(toml_str)?;
+    pub fn from_toml(toml_str: &str) -> Result<Self, crate::error::PipelineError> {
+        let providers: BTreeMap<String, BTreeMap<String, String>> = toml::from_str(toml_str)
+            .map_err(|e| crate::error::PipelineError::Config(format!("failed to parse model TOML: {e}")))?;
         Ok(Self { providers })
     }
 
@@ -108,8 +108,10 @@ impl ModelConfig {
     ///
     /// # Errors
     /// Returns an error if the file cannot be read or parsed.
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
+    pub fn from_file(path: &Path) -> Result<Self, crate::error::PipelineError> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            crate::error::PipelineError::Config(format!("failed to read model config {}: {e}", path.display()))
+        })?;
         Self::from_toml(&content)
     }
 
@@ -132,13 +134,11 @@ impl ModelConfig {
     /// - The provider is `Custom` (always uses hardcoded logic)
     /// - The configuration does not contain the provider or model key
     pub fn resolve(&self, model: &Model, provider: &Provider) -> String {
-        let provider_key = match provider.config_key() {
-            Some(k) => k,
-            None => return model.id(provider),
+        let Some(provider_key) = provider.config_key() else {
+            return model.id(provider);
         };
-        let model_key = match model.config_key() {
-            Some(k) => k,
-            None => return model.id(provider),
+        let Some(model_key) = model.config_key() else {
+            return model.id(provider);
         };
 
         self.providers

@@ -25,6 +25,11 @@ pub fn serialize<S: Serializer>(duration: &Duration, serializer: S) -> Result<S:
 #[allow(clippy::type_complexity)] // serde `with` protocol requires this exact signature
 pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
     let secs = f64::deserialize(deserializer)?;
+    if secs < 0.0 || secs.is_nan() || secs.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "duration must be a non-negative finite number",
+        ));
+    }
     Ok(Duration::from_secs_f64(secs))
 }
 
@@ -59,6 +64,14 @@ pub mod option {
         deserializer: D,
     ) -> Result<Option<Duration>, D::Error> {
         let opt = Option::<f64>::deserialize(deserializer)?;
-        Ok(opt.map(Duration::from_secs_f64))
+        match opt {
+            Some(secs) if secs < 0.0 || secs.is_nan() || secs.is_infinite() => {
+                Err(serde::de::Error::custom(
+                    "duration must be a non-negative finite number",
+                ))
+            }
+            Some(secs) => Ok(Some(Duration::from_secs_f64(secs))),
+            None => Ok(None),
+        }
     }
 }

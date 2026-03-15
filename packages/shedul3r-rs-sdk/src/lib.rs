@@ -9,7 +9,7 @@
 //! ```no_run
 //! use shedul3r_rs_sdk::{Client, ClientConfig, TaskPayload};
 //!
-//! # async fn example() -> anyhow::Result<()> {
+//! # async fn example() -> Result<(), shedul3r_rs_sdk::SdkError> {
 //! let client = Client::with_defaults()?;
 //! let payload = TaskPayload {
 //!     task: String::from("name: my-task\ncommand: echo"),
@@ -27,6 +27,9 @@
 pub mod client;
 /// Bundle upload and download utilities.
 pub mod bundle;
+/// Typed error enum.
+pub mod error;
 
 pub use client::{Client, ClientConfig, TaskPayload, TaskResult};
 pub use bundle::BundleHandle;
+pub use error::SdkError;

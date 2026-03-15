@@ -13,6 +13,8 @@ pub mod agent;
 pub mod bundle;
 /// Shell command execution.
 pub mod command;
+/// Typed error enum.
+pub mod error;
 /// Pipeline executor (SDK client + auth + dry-run).
 pub mod executor;
 /// Typed LLM model and provider selection.
@@ -31,6 +33,7 @@ pub use agent::{AgentBuilder, AgentResult, AgentTask};
 pub use auth::Auth;
 pub use bundle::Bundle;
 pub use command::{CommandBuilder, CommandResult};
+pub use error::PipelineError;
 pub use executor::Executor;
 pub use model::{Model, ModelConfig, Provider};
 pub use pool::run_pool;

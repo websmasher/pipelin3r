@@ -7,6 +7,7 @@ use shedul3r_rs_sdk::{Client, ClientConfig};
 
 use crate::agent::AgentBuilder;
 use crate::auth::Auth;
+use crate::error::PipelineError;
 use crate::model::{ModelConfig, Provider};
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
@@ -30,7 +31,7 @@ impl Executor {
     ///
     /// # Errors
     /// Returns an error if the SDK client cannot be built.
-    pub fn new(config: &ClientConfig) -> anyhow::Result<Self> {
+    pub fn new(config: &ClientConfig) -> Result<Self, PipelineError> {
         let client = Client::new(config.clone())?;
         Ok(Self {
             client,
@@ -46,7 +47,7 @@ impl Executor {
     ///
     /// # Errors
     /// Returns an error if the SDK client cannot be built.
-    pub fn with_defaults() -> anyhow::Result<Self> {
+    pub fn with_defaults() -> Result<Self, PipelineError> {
         Self::new(&ClientConfig::default())
     }
 

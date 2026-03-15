@@ -19,10 +19,12 @@ pub enum Limit3rError {
     },
 
     /// All retry attempts have been exhausted without success.
-    #[error("All {attempts} retry attempts exhausted")]
+    #[error("All {attempts} retry attempts exhausted (last error: {last_message})")]
     RetryExhausted {
         /// Total number of attempts that were made.
         attempts: u32,
+        /// Display output of the last error encountered before giving up.
+        last_message: String,
     },
 
     /// The bulkhead is full and cannot accept more concurrent requests.

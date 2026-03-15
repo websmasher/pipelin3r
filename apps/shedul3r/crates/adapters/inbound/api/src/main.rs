@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Json, routing::get};
@@ -70,6 +71,8 @@ async fn serve(port_override: Option<u16>) {
         .merge(bundle_router())
         .route("/health", get(health))
         .with_state(Arc::clone(&state))
+        // Limit total request body to 50 MB for all endpoints.
+        .layer(DefaultBodyLimit::max(50_000_000))
         // Panic-to-HTTP conversion — prevents raw panic messages leaking to clients
         .layer(CatchPanicLayer::custom(|_| {
             let body = serde_json::json!({

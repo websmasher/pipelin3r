@@ -2,6 +2,8 @@
 
 use std::fmt::Write;
 
+use crate::error::PipelineError;
+
 /// Configuration for generating a task YAML definition.
 pub struct TaskConfig {
     pub name: String,
@@ -18,7 +20,7 @@ pub struct TaskConfig {
 ///
 /// # Errors
 /// Returns an error if string formatting fails (should not happen in practice).
-pub fn build_task_yaml(config: &TaskConfig) -> anyhow::Result<String> {
+pub fn build_task_yaml(config: &TaskConfig) -> Result<String, PipelineError> {
     let model = config.model.as_deref().unwrap_or("opus");
     let timeout = config.timeout.as_deref().unwrap_or("15m");
     let provider_id = config.provider_id.as_deref().unwrap_or("claude");
@@ -30,21 +32,45 @@ pub fn build_task_yaml(config: &TaskConfig) -> anyhow::Result<String> {
         "claude -p --model {model} --setting-sources \"\" --permission-mode bypassPermissions"
     );
     if let Some(tools) = &config.allowed_tools {
-        write!(&mut command, " --allowedTools {tools}")?;
+        write!(&mut command, " --allowedTools {tools}").map_err(|e| {
+            PipelineError::Config(format!("failed to format command: {e}"))
+        })?;
     }
 
     let mut out = String::new();
-    writeln!(&mut out, "name: {}", config.name)?;
-    writeln!(&mut out, "command: {command}")?;
-    writeln!(&mut out, "timeout: {timeout}")?;
-    writeln!(&mut out, "provider-id: {provider_id}")?;
-    writeln!(&mut out, "max-concurrent: {max_concurrent}")?;
-    writeln!(&mut out, "max-wait: {max_wait}")?;
-    writeln!(&mut out, "retry:")?;
-    writeln!(&mut out, "  max-retries: {max_retries}")?;
-    writeln!(&mut out, "  initial-delay: 5s")?;
-    writeln!(&mut out, "  backoff-multiplier: 2.0")?;
-    writeln!(&mut out, "  max-delay: 30s")?;
+    writeln!(&mut out, "name: {}", config.name).map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "command: {command}").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "timeout: {timeout}").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "provider-id: {provider_id}").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "max-concurrent: {max_concurrent}").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "max-wait: {max_wait}").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "retry:").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "  max-retries: {max_retries}").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "  initial-delay: 5s").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "  backoff-multiplier: 2.0").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
+    writeln!(&mut out, "  max-delay: 30s").map_err(|e| {
+        PipelineError::Config(format!("failed to format task YAML: {e}"))
+    })?;
 
     Ok(out)
 }

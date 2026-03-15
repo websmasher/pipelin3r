@@ -9,6 +9,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::error::PipelineError;
+
 /// Run async tasks with bounded concurrency.
 ///
 /// Fires at most `concurrency` tasks at a time, starting the next as each completes.
@@ -16,16 +18,20 @@ use tokio::task::JoinSet;
 ///
 /// Individual task errors are captured in the returned `Vec`. Spawned task panics
 /// or cancellations are reported as errors in their respective slots.
-pub async fn run_pool<T, F, Fut>(items: Vec<T>, concurrency: usize, f: F) -> Vec<anyhow::Result<()>>
+pub async fn run_pool<T, F, Fut>(
+    items: Vec<T>,
+    concurrency: usize,
+    f: F,
+) -> Vec<Result<(), PipelineError>>
 where
     T: Send + 'static,
     F: Fn(T, usize) -> Fut + Send + Sync + Clone + 'static,
-    Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
+    Fut: std::future::Future<Output = Result<(), PipelineError>> + Send,
 {
     let effective_concurrency = if concurrency == 0 { 1 } else { concurrency };
     let semaphore = Arc::new(Semaphore::new(effective_concurrency));
     let total = items.len();
-    let mut results: Vec<Option<anyhow::Result<()>>> = (0..total).map(|_| None).collect();
+    let mut results: Vec<Option<Result<(), PipelineError>>> = (0..total).map(|_| None).collect();
     let mut join_set = JoinSet::new();
 
     for (index, item) in items.into_iter().enumerate() {
@@ -36,9 +42,9 @@ where
             let _permit = sem
                 .acquire()
                 .await
-                .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
+                .map_err(|e| PipelineError::Other(format!("semaphore closed: {e}")))?;
             let result = func(item, index).await;
-            Ok::<(usize, anyhow::Result<()>), anyhow::Error>((index, result))
+            Ok::<(usize, Result<(), PipelineError>), PipelineError>((index, result))
         });
     }
 
@@ -60,7 +66,7 @@ where
 
     results
         .into_iter()
-        .map(|opt| opt.unwrap_or_else(|| Err(anyhow::anyhow!("task result missing"))))
+        .map(|opt| opt.unwrap_or_else(|| Err(PipelineError::Other(String::from("task result missing")))))
         .collect()
 }
 
@@ -97,7 +103,7 @@ mod tests {
         let items: Vec<usize> = (0..3).collect();
         let results = run_pool(items, 2, |item, _index| async move {
             if item == 1 {
-                anyhow::bail!("item 1 failed");
+                return Err(PipelineError::Other(String::from("item 1 failed")));
             }
             Ok(())
         })

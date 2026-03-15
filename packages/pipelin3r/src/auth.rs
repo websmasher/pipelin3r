@@ -1,6 +1,8 @@
 //! Per-invocation authentication for LLM agent invocations.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+
+use crate::error::PipelineError;
 
 /// Authentication method for LLM agent invocations.
 #[derive(Debug, Clone)]
@@ -13,15 +15,23 @@ pub enum Auth {
     ///
     /// Checks `CLAUDE_CODE_OAUTH_TOKEN` first, then `ANTHROPIC_API_KEY`.
     /// Also forwards `CLAUDE_ACCOUNT` and `CLAUDE_CONFIG_DIR` if set.
+    ///
+    /// Returns an error if neither credential variable is set.
     FromEnv,
     /// Custom environment variables (passed through as-is).
-    Custom(HashMap<String, String>),
+    Custom(BTreeMap<String, String>),
 }
 
 impl Auth {
     /// Convert auth configuration to environment variables for injection into a task.
-    pub fn to_env(&self) -> HashMap<String, String> {
-        let mut env = HashMap::new();
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(PipelineError::Auth)` when `FromEnv` is used but neither
+    /// `CLAUDE_CODE_OAUTH_TOKEN` nor `ANTHROPIC_API_KEY` is set in the process
+    /// environment.
+    pub fn to_env(&self) -> Result<BTreeMap<String, String>, PipelineError> {
+        let mut env = BTreeMap::new();
         match self {
             Self::OAuthToken(token) => {
                 let _ = env.insert(
@@ -33,10 +43,19 @@ impl Auth {
                 let _ = env.insert(String::from("ANTHROPIC_API_KEY"), key.clone());
             }
             Self::FromEnv => {
-                if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
+                let has_token = if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
                     let _ = env.insert(String::from("CLAUDE_CODE_OAUTH_TOKEN"), token);
+                    true
                 } else if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
                     let _ = env.insert(String::from("ANTHROPIC_API_KEY"), key);
+                    true
+                } else {
+                    false
+                };
+                if !has_token {
+                    return Err(PipelineError::Auth(String::from(
+                        "neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set in the environment",
+                    )));
                 }
                 // Forward Claude account settings if present.
                 if let Ok(account) = std::env::var("CLAUDE_ACCOUNT") {
@@ -50,7 +69,7 @@ impl Auth {
                 env.clone_from(custom);
             }
         }
-        env
+        Ok(env)
     }
 }
 
@@ -58,9 +77,9 @@ impl Auth {
 ///
 /// Returns `None` if the merged result is empty.
 pub(crate) fn merge_env(
-    base: HashMap<String, String>,
-    overlay: Option<&HashMap<String, String>>,
-) -> Option<HashMap<String, String>> {
+    base: BTreeMap<String, String>,
+    overlay: Option<&BTreeMap<String, String>>,
+) -> Option<BTreeMap<String, String>> {
     let mut merged = base;
     if let Some(extra) = overlay {
         for (k, v) in extra {
@@ -81,7 +100,7 @@ mod tests {
     #[test]
     fn oauth_token_produces_single_env_var() {
         let auth = Auth::OAuthToken(String::from("tok_123"));
-        let env = auth.to_env();
+        let env = auth.to_env().unwrap_or_default();
         assert_eq!(env.len(), 1, "should produce exactly one env var");
         assert_eq!(
             env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
@@ -93,7 +112,7 @@ mod tests {
     #[test]
     fn api_key_produces_single_env_var() {
         let auth = Auth::ApiKey(String::from("sk-ant-123"));
-        let env = auth.to_env();
+        let env = auth.to_env().unwrap_or_default();
         assert_eq!(env.len(), 1, "should produce exactly one env var");
         assert_eq!(
             env.get("ANTHROPIC_API_KEY").map(String::as_str),
@@ -104,11 +123,11 @@ mod tests {
 
     #[test]
     fn custom_passes_through() {
-        let mut custom = HashMap::new();
+        let mut custom = BTreeMap::new();
         let _ = custom.insert(String::from("MY_KEY"), String::from("my_val"));
         let _ = custom.insert(String::from("OTHER"), String::from("stuff"));
         let auth = Auth::Custom(custom);
-        let env = auth.to_env();
+        let env = auth.to_env().unwrap_or_default();
         assert_eq!(env.len(), 2, "should pass through all custom vars");
         assert_eq!(
             env.get("MY_KEY").map(String::as_str),
@@ -118,17 +137,29 @@ mod tests {
     }
 
     #[test]
-    fn from_env_with_no_vars_produces_empty() {
-        // In test environment, these vars are typically not set.
-        // We can't guarantee this, but it tests the fallback path.
+    fn from_env_returns_result() {
+        // In test environment, credentials may or may not be set.
+        // We verify the method returns a Result (not panic) in either case.
         let auth = Auth::FromEnv;
-        let _env = auth.to_env();
-        // Just verify it doesn't panic — actual values depend on test environment.
+        let result = auth.to_env();
+        // If no credentials are set, we get Err; if set, we get Ok with entries.
+        match result {
+            Ok(env) => {
+                assert!(!env.is_empty(), "should have at least one credential var");
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("CLAUDE_CODE_OAUTH_TOKEN"),
+                    "error should mention missing vars: {msg}"
+                );
+            }
+        }
     }
 
     #[test]
     fn merge_env_empty_produces_none() {
-        let base = HashMap::new();
+        let base = BTreeMap::new();
         let result = merge_env(base, None);
         assert!(result.is_none(), "empty maps should produce None");
     }
@@ -136,11 +167,11 @@ mod tests {
     #[test]
     #[allow(clippy::unwrap_used)] // reason: test assertion on known-Some value
     fn merge_env_overlay_takes_precedence() {
-        let mut base = HashMap::new();
+        let mut base = BTreeMap::new();
         let _ = base.insert(String::from("A"), String::from("1"));
         let _ = base.insert(String::from("B"), String::from("base"));
 
-        let mut overlay = HashMap::new();
+        let mut overlay = BTreeMap::new();
         let _ = overlay.insert(String::from("B"), String::from("overlay"));
         let _ = overlay.insert(String::from("C"), String::from("3"));
 

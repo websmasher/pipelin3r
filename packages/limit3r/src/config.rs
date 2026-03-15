@@ -55,6 +55,82 @@ pub struct BulkheadConfig {
     pub max_wait_duration: Duration,
 }
 
+impl RateLimitConfig {
+    /// Validate the configuration, returning a description of any problem found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if any field has an invalid value.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.limit_for_period == 0 {
+            return Err("limit_for_period must be greater than 0".to_owned());
+        }
+        if self.limit_refresh_period.is_zero() {
+            return Err("limit_refresh_period must be greater than zero".to_owned());
+        }
+        if self.timeout_duration.is_zero() {
+            return Err("timeout_duration must be greater than zero".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl CircuitBreakerConfig {
+    /// Validate the configuration, returning a description of any problem found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if any field has an invalid value.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.sliding_window_size == 0 {
+            return Err("sliding_window_size must be greater than 0".to_owned());
+        }
+        if self.failure_rate_threshold < 0.0 || self.failure_rate_threshold > 100.0 {
+            return Err(
+                "failure_rate_threshold must be between 0.0 and 100.0 inclusive".to_owned(),
+            );
+        }
+        if self.wait_duration_in_open_state.is_zero() {
+            return Err("wait_duration_in_open_state must be greater than zero".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl RetryConfig {
+    /// Validate the configuration, returning a description of any problem found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if any field has an invalid value.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_attempts == 0 {
+            return Err("max_attempts must be greater than 0".to_owned());
+        }
+        if self.backoff_multiplier <= 0.0 || self.backoff_multiplier.is_nan() {
+            return Err("backoff_multiplier must be a positive finite number".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl BulkheadConfig {
+    /// Validate the configuration, returning a description of any problem found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `max_concurrent` is zero (no permits would
+    /// ever be available).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_concurrent == 0 {
+            return Err(
+                "max_concurrent is 0 — no permits will ever be available".to_owned(),
+            );
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // reason: test assertions
 mod tests {

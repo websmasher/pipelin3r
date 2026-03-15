@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::PipelineError;
+
 /// Builder for executing shell commands.
 #[must_use]
 pub struct CommandBuilder {
@@ -49,7 +51,7 @@ impl CommandBuilder {
     ///
     /// # Errors
     /// Returns an error if the command cannot be spawned.
-    pub async fn execute(self) -> anyhow::Result<CommandResult> {
+    pub async fn execute(self) -> Result<CommandResult, PipelineError> {
         let mut cmd = tokio::process::Command::new(&self.program);
         let _ = cmd.args(&self.args);
 
@@ -75,17 +77,17 @@ impl CommandResult {
     ///
     /// # Errors
     /// Returns an error containing stderr if the command failed.
-    pub fn require_success(&self) -> anyhow::Result<&Self> {
+    pub fn require_success(&self) -> Result<&Self, PipelineError> {
         if self.success {
             Ok(self)
         } else {
             let code_str = self
                 .exit_code
                 .map_or_else(|| String::from("unknown"), |c| c.to_string());
-            anyhow::bail!(
-                "command failed (exit code {code_str}): {}",
+            Err(PipelineError::Command(format!(
+                "failed (exit code {code_str}): {}",
                 self.stderr.trim()
-            );
+            )))
         }
     }
 }
