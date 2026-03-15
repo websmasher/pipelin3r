@@ -79,6 +79,8 @@ type StateMap = BTreeMap<String, CircuitState>;
 #[derive(Debug)]
 pub struct InMemoryCircuitBreaker {
     state: RwLock<StateMap>,
+    /// Maximum number of keys tracked before stale entries are evicted.
+    max_tracked_keys: usize,
 }
 
 impl Default for InMemoryCircuitBreaker {
@@ -88,10 +90,16 @@ impl Default for InMemoryCircuitBreaker {
 }
 
 impl InMemoryCircuitBreaker {
-    /// Create a new, empty circuit breaker.
+    /// Create a new, empty circuit breaker with the default key limit (10,000).
     pub const fn new() -> Self {
+        Self::with_max_keys(MAX_TRACKED_KEYS)
+    }
+
+    /// Create a new, empty circuit breaker with a custom maximum number of tracked keys.
+    pub const fn with_max_keys(max: usize) -> Self {
         Self {
             state: RwLock::new(BTreeMap::new()),
+            max_tracked_keys: max,
         }
     }
 }
@@ -113,7 +121,7 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
 
         // Evict when the map exceeds the size limit, but never evict the
         // current key and never drop circuits that are accumulating failures.
-        if map.len() > MAX_TRACKED_KEYS {
+        if map.len() > self.max_tracked_keys {
             // First pass: remove closed circuits with empty history (truly idle).
             map.retain(|k, circuit| {
                 k == key || circuit.state != State::Closed || !circuit.results.is_empty()
@@ -121,8 +129,8 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
 
             // Second pass if still over: remove closed circuits with the
             // fewest recorded results (least information loss).
-            if map.len() > MAX_TRACKED_KEYS {
-                let excess = map.len().saturating_sub(MAX_TRACKED_KEYS);
+            if map.len() > self.max_tracked_keys {
+                let excess = map.len().saturating_sub(self.max_tracked_keys);
                 let mut closed_with_history: Vec<_> = map
                     .iter()
                     .filter(|(k, c)| k.as_str() != key && c.state == State::Closed)
@@ -411,79 +419,144 @@ mod tests {
     }
 
     #[test]
-    fn eviction_never_removes_current_key() {
-        let cb = InMemoryCircuitBreaker::new();
+    fn no_eviction_at_exactly_max_keys_circuit_breaker() {
+        // Mutant kill: `>` vs `>=` — at exactly max, no eviction should run
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
         let config = test_config(50.0, 4, Duration::from_secs(5));
 
-        // Fill up beyond MAX_TRACKED_KEYS by creating many keys
-        // We can't create 10001 keys in a unit test easily, but we can
-        // verify the current key survives by inserting it, then accessing it.
-        cb.check_permitted("survivor", &config).unwrap();
-        cb.record_failure("survivor");
+        // Fill to exactly 5
+        for i in 0..5 {
+            cb.check_permitted(&format!("key-{i}"), &config).unwrap();
+        }
 
-        // Access again — the key must still exist and not error
-        let result = cb.check_permitted("survivor", &config);
-        assert!(result.is_ok(), "current key was evicted or lost");
+        // All 5 keys must exist (no eviction at exactly the limit)
+        let size_at_max = cb.state.read().len();
+        assert_eq!(size_at_max, 5, "no eviction at exactly max_tracked_keys");
+        for i in 0..5 {
+            let exists = cb.state.read().contains_key(&format!("key-{i}"));
+            assert!(exists, "key-{i} must exist at exactly the limit");
+        }
     }
 
     #[test]
-    fn regression_circuit_breaker_does_not_trip_on_partial_window() {
-        // Regression: A single failure in a window of size 100 should NOT open
-        // the circuit. The old code computed 1/1 = 100% and tripped immediately
-        // without waiting for enough data.
-        let cb = InMemoryCircuitBreaker::new();
-        let config = test_config(50.0, 100, Duration::from_secs(5));
+    fn eviction_triggers_when_exceeding_max_keys_circuit_breaker() {
+        // Mutant kill: `>` vs `>=` — at max+1, eviction must trigger
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
+        let config = test_config(50.0, 4, Duration::from_secs(5));
 
-        // Initialize the key
-        cb.check_permitted("key-a", &config).unwrap();
+        // Fill to exactly 5 (all closed+empty = idle)
+        for i in 0..5 {
+            cb.check_permitted(&format!("key-{i}"), &config).unwrap();
+        }
 
-        // Record exactly 1 failure
-        cb.record_failure("key-a");
+        // Add one more — triggers eviction (idle keys evicted)
+        cb.check_permitted("key-5", &config).unwrap();
 
-        // Must still be permitted — 1 result is far below min_calls = max(2, 100/2) = 50
-        let result = cb.check_permitted("key-a", &config);
+        let map = cb.state.read();
         assert!(
-            result.is_ok(),
-            "circuit tripped on 1 failure in a window of 100 — premature trip on partial window"
+            map.len() <= 6,
+            "eviction should run after exceeding max, got {}",
+            map.len()
+        );
+        assert!(
+            map.contains_key("key-5"),
+            "current key must survive eviction"
         );
     }
 
     #[test]
-    fn regression_circuit_breaker_trips_at_exact_threshold_with_window_2() {
-        // Regression: rate exactly at threshold should trip (>= not >).
-        // With threshold=50.0 and window=2, record 1 success + 1 failure (50% rate).
-        // min_calls = max(2, 2/2) = 2, so 2 results meets the threshold.
-        let cb = InMemoryCircuitBreaker::new();
-        let config = test_config(50.0, 2, Duration::from_secs(5));
+    fn eviction_keeps_open_circuits() {
+        // Mutant kill: first-pass retain logic — Open circuits must survive
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
+        let config = test_config(50.0, 4, Duration::from_secs(60));
 
-        // Initialize the key
-        cb.check_permitted("key-a", &config).unwrap();
+        // Create a key and force it open
+        cb.check_permitted("open-key", &config).unwrap();
+        cb.record_failure("open-key");
+        cb.record_failure("open-key");
+        cb.record_failure("open-key");
+        let _ = cb.check_permitted("open-key", &config); // triggers open
 
-        // Record 1 success and 1 failure = exactly 50%
-        cb.record_success("key-a");
-        cb.record_failure("key-a");
+        // Fill with idle keys (closed, empty history)
+        for i in 0..5 {
+            cb.check_permitted(&format!("idle-{i}"), &config).unwrap();
+        }
 
-        // 1/2 = 50% >= 50% threshold — must trip
-        let result = cb.check_permitted("key-a", &config);
+        // Trigger eviction
+        cb.check_permitted("trigger-evict", &config).unwrap();
+
+        let map = cb.state.read();
         assert!(
-            result.is_err(),
-            "circuit did not trip at exactly 50% failure rate with threshold 50% and window 2"
+            map.contains_key("open-key"),
+            "open circuit must survive eviction"
         );
     }
 
     #[test]
-    fn regression_circuit_breaker_eviction_preserves_failure_history() {
-        // Regression: eviction used to drop ALL closed keys, losing failure
-        // history for keys that were accumulating failures below threshold.
-        // After the fix, only truly idle keys (empty history) are evicted first,
-        // then those with fewest results.
-        let cb = InMemoryCircuitBreaker::new();
+    fn eviction_removes_closed_empty_first() {
+        // Mutant kill: first pass removes closed+empty, not closed+history
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
         let config = test_config(50.0, 10, Duration::from_secs(5));
 
-        // Fill beyond MAX_TRACKED_KEYS with idle keys (no history).
-        for i in 0..MAX_TRACKED_KEYS.saturating_add(1) {
-            let key = format!("filler-{i}");
+        // Create a key with non-empty history
+        cb.check_permitted("has-history", &config).unwrap();
+        cb.record_success("has-history");
+        cb.record_success("has-history");
+
+        // Fill with truly idle keys (closed, empty)
+        for i in 0..5 {
+            cb.check_permitted(&format!("empty-{i}"), &config).unwrap();
+        }
+
+        // Trigger eviction
+        cb.check_permitted("trigger-evict", &config).unwrap();
+
+        let map = cb.state.read();
+        assert!(
+            map.contains_key("has-history"),
+            "closed circuit with history should survive first-pass eviction"
+        );
+    }
+
+    #[test]
+    fn second_pass_evicts_fewest_results_first() {
+        // Mutant kill: second pass — keys with fewest results evicted first
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
+        let config = test_config(50.0, 100, Duration::from_secs(5));
+
+        // Create keys with varying history (none truly idle, so first-pass won't help)
+        for i in 0..6 {
+            let key = format!("hist-{i}");
             cb.check_permitted(&key, &config).unwrap();
+            cb.record_success(&key);
+        }
+
+        // Create a key with many results — should be last to be evicted
+        cb.check_permitted("lots-of-history", &config).unwrap();
+        for _ in 0..10 {
+            cb.record_success("lots-of-history");
+        }
+
+        // Trigger eviction
+        cb.check_permitted("trigger", &config).unwrap();
+        cb.record_success("trigger");
+
+        let map = cb.state.read();
+        assert!(
+            map.contains_key("lots-of-history"),
+            "key with most results should survive second-pass eviction"
+        );
+    }
+
+    #[test]
+    fn eviction_preserves_failure_history() {
+        // Regression: eviction must not lose failure history for keys accumulating failures.
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
+        let config = test_config(50.0, 10, Duration::from_secs(5));
+
+        // Fill with idle keys (no history)
+        for i in 0..5 {
+            cb.check_permitted(&format!("filler-{i}"), &config).unwrap();
         }
 
         // Add a key with failure history below threshold
@@ -495,15 +568,12 @@ mod tests {
         // Trigger eviction by inserting another key
         cb.check_permitted("trigger-eviction", &config).unwrap();
 
-        // The important key's failure history must be preserved.
-        // Record more failures to reach the trip threshold.
-        // With window=10, min_calls = max(2, 10/2) = 5.
-        // We already have 3 failures, add 2 more to reach 5 results all failures = 100%.
+        // Record more failures to reach the trip threshold
+        // min_calls = max(2, 10/2) = 5, we have 3 failures, add 2 more
         cb.record_failure("important-key");
         cb.record_failure("important-key");
 
-        // Now check — if history was preserved, we have 5 failures = 100% >= 50%, should trip.
-        // If history was lost, the key would look fresh and not trip.
+        // If history was preserved, 5 failures = 100% >= 50%, should trip
         let result = cb.check_permitted("important-key", &config);
         assert!(
             result.is_err(),
@@ -512,146 +582,49 @@ mod tests {
     }
 
     #[test]
-    fn mutant_kill_eviction_triggers_at_max_tracked_keys_circuit_breaker() {
-        // Mutant kill: circuit_breaker.rs:116 — replace > with ==/</<=/>=
-        let cb = InMemoryCircuitBreaker::new();
-        let config = test_config(50.0, 4, Duration::from_secs(5));
-
-        // Fill to exactly MAX_TRACKED_KEYS
-        for i in 0..MAX_TRACKED_KEYS {
-            let key = format!("fill-{i}");
-            cb.check_permitted(&key, &config).unwrap();
-        }
-
-        // At exactly MAX_TRACKED_KEYS, no eviction should have happened
-        let size_at_max = cb.state.read().len();
-        assert_eq!(
-            size_at_max, MAX_TRACKED_KEYS,
-            "no eviction at exactly MAX_TRACKED_KEYS"
-        );
-
-        // Add one more — triggers eviction
-        cb.check_permitted("one-more", &config).unwrap();
-
-        let size_after = cb.state.read().len();
-        assert!(
-            size_after <= MAX_TRACKED_KEYS.saturating_add(1),
-            "eviction should have run after exceeding MAX_TRACKED_KEYS"
-        );
-    }
-
-    #[test]
-    fn mutant_kill_eviction_keeps_open_circuits() {
-        // Mutant kill: circuit_breaker.rs:119 — replace != with == and || with &&
-        // Open circuits must survive first-pass eviction.
-        let cb = InMemoryCircuitBreaker::new();
-        let config = test_config(50.0, 4, Duration::from_secs(60));
-
-        // Create a key and force it open
-        cb.check_permitted("open-key", &config).unwrap();
-        cb.record_failure("open-key");
-        cb.record_failure("open-key");
-        cb.record_failure("open-key");
-        let _ = cb.check_permitted("open-key", &config); // triggers open
-
-        // Fill beyond MAX_TRACKED_KEYS with idle keys (closed, empty history)
-        for i in 0..MAX_TRACKED_KEYS {
-            let key = format!("idle-{i}");
-            cb.check_permitted(&key, &config).unwrap();
-        }
-
-        // Trigger eviction
-        cb.check_permitted("trigger-evict", &config).unwrap();
-
-        // The open circuit must survive
-        let map = cb.state.read();
-        assert!(
-            map.contains_key("open-key"),
-            "open circuit must survive eviction"
-        );
-    }
-
-    #[test]
-    fn mutant_kill_eviction_removes_closed_empty_first() {
-        // Mutant kill: circuit_breaker.rs:119 — first pass removes closed+empty
-        // Mutant kill: circuit_breaker.rs:124 — second pass only runs if still over limit
-        let cb = InMemoryCircuitBreaker::new();
-        let config = test_config(50.0, 10, Duration::from_secs(5));
-
-        // Create a key with non-empty history (closed but has results)
-        cb.check_permitted("has-history", &config).unwrap();
-        cb.record_success("has-history");
-        cb.record_success("has-history");
-
-        // Fill beyond MAX_TRACKED_KEYS with truly idle keys (closed, empty)
-        for i in 0..MAX_TRACKED_KEYS {
-            let key = format!("empty-{i}");
-            cb.check_permitted(&key, &config).unwrap();
-        }
-
-        // Trigger eviction
-        cb.check_permitted("trigger-evict", &config).unwrap();
-
-        // has-history should survive first-pass (it has non-empty results)
-        let map = cb.state.read();
-        assert!(
-            map.contains_key("has-history"),
-            "closed circuit with history should survive first-pass eviction"
-        );
-    }
-
-    #[test]
-    fn mutant_kill_second_pass_evicts_closed_with_fewest_results() {
-        // Mutant kill: circuit_breaker.rs:124 — replace > with >=
-        // Mutant kill: circuit_breaker.rs:128 — replace && with || and != with == and == with !=
+    fn regression_circuit_breaker_does_not_trip_on_partial_window() {
         let cb = InMemoryCircuitBreaker::new();
         let config = test_config(50.0, 100, Duration::from_secs(5));
 
-        // Create keys with varying history sizes — none are truly idle (empty)
-        // so first-pass won't remove them, forcing second-pass.
-        for i in 0..MAX_TRACKED_KEYS.saturating_add(2) {
-            let key = format!("history-{i}");
-            cb.check_permitted(&key, &config).unwrap();
-            // Give each key at least 1 result so first-pass doesn't evict them
-            cb.record_success(&key);
-        }
+        cb.check_permitted("key-a", &config).unwrap();
+        cb.record_failure("key-a");
 
-        // Create a key with many results — should be last to be evicted
-        cb.check_permitted("lots-of-history", &config).unwrap();
-        for _ in 0..10 {
-            cb.record_success("lots-of-history");
-        }
-
-        // Trigger eviction with another key
-        cb.check_permitted("trigger", &config).unwrap();
-        cb.record_success("trigger");
-
-        // lots-of-history has 10 results, most others have 1 — it should survive
-        let map = cb.state.read();
+        let result = cb.check_permitted("key-a", &config);
         assert!(
-            map.contains_key("lots-of-history"),
-            "key with most results should survive second-pass eviction"
+            result.is_ok(),
+            "circuit tripped on 1 failure in a window of 100 — premature trip on partial window"
         );
     }
 
     #[test]
-    fn mutant_kill_trim_to_window_actually_trims() {
-        // Mutant kill: circuit_breaker.rs:44 — replace trim_to_window body with ()
+    fn regression_circuit_breaker_trips_at_exact_threshold_with_window_2() {
         let cb = InMemoryCircuitBreaker::new();
-        // Use window_size=4 and record 10 results
+        let config = test_config(50.0, 2, Duration::from_secs(5));
+
+        cb.check_permitted("key-a", &config).unwrap();
+        cb.record_success("key-a");
+        cb.record_failure("key-a");
+
+        let result = cb.check_permitted("key-a", &config);
+        assert!(
+            result.is_err(),
+            "circuit did not trip at exactly 50% failure rate with threshold 50% and window 2"
+        );
+    }
+
+    #[test]
+    fn trim_to_window_actually_trims() {
+        let cb = InMemoryCircuitBreaker::new();
         let config = test_config(10.0, 4, Duration::from_secs(5));
 
         cb.check_permitted("trim-key", &config).unwrap();
 
-        // Record 10 successes (all below failure threshold)
         for _ in 0..10 {
             cb.record_success("trim-key");
         }
 
-        // check_permitted calls trim_to_window — after trim, only 4 results should remain
         cb.check_permitted("trim-key", &config).unwrap();
 
-        // Verify by checking internal state
         let map = cb.state.read();
         let circuit = map.get("trim-key").unwrap();
         assert!(
@@ -662,25 +635,22 @@ mod tests {
     }
 
     #[test]
-    fn mutant_kill_eviction_excludes_current_key_in_second_pass() {
-        // Mutant kill: circuit_breaker.rs:128 — k.as_str() != key filter
-        // The current key must not be evicted in second-pass even if it's closed.
-        let cb = InMemoryCircuitBreaker::new();
+    fn eviction_excludes_current_key_in_second_pass() {
+        // Current key must survive second-pass even if it's closed with minimal history
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
         let config = test_config(50.0, 100, Duration::from_secs(5));
 
         // Fill with keys that all have history (non-empty, so first-pass won't help)
-        for i in 0..MAX_TRACKED_KEYS.saturating_add(2) {
+        for i in 0..6 {
             let key = format!("nonempty-{i}");
             cb.check_permitted(&key, &config).unwrap();
             cb.record_success(&key);
         }
 
-        // Now check_permitted on a key that has minimal history —
-        // it should still survive because it's the current key
+        // Check on a key with minimal history — must survive as current key
         cb.check_permitted("current-key", &config).unwrap();
         cb.record_success("current-key");
 
-        // Trigger another check to ensure it doesn't get evicted
         cb.check_permitted("current-key", &config).unwrap();
 
         let map = cb.state.read();
@@ -691,14 +661,9 @@ mod tests {
     }
 
     #[test]
-    fn mutant_kill_v2_eviction_first_pass_retains_non_closed() {
-        // Mutant kill: circuit_breaker.rs:119 — `!= State::Closed` replaced with `== State::Closed`
-        // With ==, the first pass would KEEP closed+empty and EVICT non-closed (open/half-open).
-        // With !=, non-closed circuits are retained and only closed+empty are evicted.
-        //
-        // Setup: >MAX_TRACKED_KEYS entries. One key is Open, rest are Closed+empty.
-        // After eviction, the Open key MUST survive.
-        let cb = InMemoryCircuitBreaker::new();
+    fn first_pass_retains_non_closed_circuits() {
+        // Open circuits must survive first-pass eviction even with small max_keys
+        let cb = InMemoryCircuitBreaker::with_max_keys(5);
         let config = test_config(50.0, 4, Duration::from_secs(60));
 
         // Create an Open circuit
@@ -708,22 +673,19 @@ mod tests {
         cb.record_failure("must-survive-open");
         let _ = cb.check_permitted("must-survive-open", &config); // opens it
 
-        // Fill with MAX_TRACKED_KEYS idle (Closed+empty) keys to exceed limit
-        for i in 0..MAX_TRACKED_KEYS {
-            let key = format!("idle-{i}");
-            cb.check_permitted(&key, &config).unwrap();
+        // Fill with idle keys to exceed limit
+        for i in 0..5 {
+            cb.check_permitted(&format!("idle-{i}"), &config).unwrap();
         }
 
-        // Trigger eviction via a new key
+        // Trigger eviction
         cb.check_permitted("eviction-trigger", &config).unwrap();
 
-        // The Open key must survive first-pass eviction
         let map = cb.state.read();
         assert!(
             map.contains_key("must-survive-open"),
-            "Open circuit evicted by first pass — != replaced with =="
+            "Open circuit evicted by first pass"
         );
-        // Verify it's still Open
         let circuit = map.get("must-survive-open").unwrap();
         assert_eq!(
             circuit.state,
@@ -733,62 +695,13 @@ mod tests {
     }
 
     #[test]
-    fn mutant_kill_v2_second_pass_threshold_boundary() {
-        // Mutant kill: circuit_breaker.rs:124 — `> MAX_TRACKED_KEYS` replaced with
-        //   ==, <, <=, or >=
-        // After first-pass eviction, if map.len() == MAX_TRACKED_KEYS exactly,
-        // second pass must NOT run. If > is replaced with >=, second pass runs
-        // unnecessarily and may evict extra keys.
-        //
-        // Setup: MAX_TRACKED_KEYS+1 keys, all with non-empty history (first pass
-        // can't help). After first-pass, still MAX_TRACKED_KEYS+1. Second pass
-        // should evict exactly 1 to reach MAX_TRACKED_KEYS.
-        let cb = InMemoryCircuitBreaker::new();
-        let config = test_config(50.0, 100, Duration::from_secs(5));
-
-        // Create MAX_TRACKED_KEYS + 1 keys, each with history (non-empty)
-        for i in 0..MAX_TRACKED_KEYS.saturating_add(1) {
-            let key = format!("hist-{i}");
-            cb.check_permitted(&key, &config).unwrap();
-            cb.record_success(&key);
-        }
-
-        // One key with LOTS of history — should be last evicted
-        cb.check_permitted("big-history", &config).unwrap();
-        for _ in 0..50 {
-            cb.record_success("big-history");
-        }
-
-        // Trigger eviction
-        cb.check_permitted("trigger-second-pass", &config).unwrap();
-        cb.record_success("trigger-second-pass");
-
-        let map = cb.state.read();
-        // big-history (50 results) must survive — only keys with fewer results evicted
-        assert!(
-            map.contains_key("big-history"),
-            "second pass evicted key with most history"
-        );
-        // trigger-second-pass is the current key, must survive
-        assert!(
-            map.contains_key("trigger-second-pass"),
-            "current key evicted in second pass"
-        );
-    }
-
-    #[test]
-    fn mutant_kill_v2_second_pass_only_evicts_closed() {
-        // Mutant kill: circuit_breaker.rs:128 — `c.state == State::Closed` replaced with
-        //   `c.state != State::Closed`
-        // Second pass must only evict Closed circuits, never Open ones.
-        //
-        // Setup: >MAX_TRACKED_KEYS keys all with non-empty history. Some Open, some Closed.
-        // After second-pass, Open circuits must survive.
-        let cb = InMemoryCircuitBreaker::new();
+    fn second_pass_only_evicts_closed() {
+        // Open circuits must survive second-pass eviction
+        let cb = InMemoryCircuitBreaker::with_max_keys(10);
         let config = test_config(50.0, 4, Duration::from_secs(60));
 
-        // Create Open circuits with minimal history (1 result each)
-        for i in 0..100 {
+        // Create 3 Open circuits
+        for i in 0..3 {
             let key = format!("open-{i}");
             cb.check_permitted(&key, &config).unwrap();
             cb.record_failure(&key);
@@ -797,8 +710,8 @@ mod tests {
             let _ = cb.check_permitted(&key, &config); // opens it
         }
 
-        // Fill remaining slots with Closed circuits that have history
-        for i in 0..MAX_TRACKED_KEYS {
+        // Fill remaining with Closed circuits that have history
+        for i in 0..10 {
             let key = format!("closed-{i}");
             cb.check_permitted(&key, &config).unwrap();
             cb.record_success(&key);
@@ -809,14 +722,13 @@ mod tests {
         cb.record_success("trigger-evict-2");
 
         let map = cb.state.read();
-        // All Open circuits must survive second-pass
-        let open_surviving = (0..100)
+        let open_surviving = (0..3)
             .filter(|i| map.contains_key(&format!("open-{i}")))
             .count();
         assert_eq!(
-            open_surviving, 100,
+            open_surviving, 3,
             "second pass evicted {lost} Open circuits — must only evict Closed",
-            lost = 100_usize.saturating_sub(open_surviving),
+            lost = 3_usize.saturating_sub(open_surviving),
         );
     }
 
