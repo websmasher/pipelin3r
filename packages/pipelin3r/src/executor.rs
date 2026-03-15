@@ -15,6 +15,7 @@ pub struct Executor {
     default_auth: Option<Auth>,
     default_provider: Option<Provider>,
     dry_run: Option<Mutex<DryRunConfig>>,
+    remote: bool,
 }
 
 /// Configuration for dry-run capture mode.
@@ -35,6 +36,7 @@ impl Executor {
             default_auth: None,
             default_provider: None,
             dry_run: None,
+            remote: false,
         })
     }
 
@@ -57,6 +59,14 @@ impl Executor {
     #[must_use]
     pub fn with_default_provider(mut self, provider: Provider) -> Self {
         self.default_provider = Some(provider);
+        self
+    }
+
+    /// Enable remote mode: upload bundles to the server before task
+    /// submission and download outputs after completion.
+    #[must_use]
+    pub const fn with_remote(mut self) -> Self {
+        self.remote = true;
         self
     }
 
@@ -94,6 +104,11 @@ impl Executor {
     /// Get the dry-run config mutex, if dry-run is enabled.
     pub(crate) const fn dry_run_config(&self) -> Option<&Mutex<DryRunConfig>> {
         self.dry_run.as_ref()
+    }
+
+    /// Whether remote bundle upload/download is enabled.
+    pub(crate) const fn is_remote(&self) -> bool {
+        self.remote
     }
 }
 

@@ -74,6 +74,13 @@ impl Bundle {
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
+
+    /// Get a reference to the files in this bundle.
+    ///
+    /// Each entry is a `(relative_path, content)` pair.
+    pub fn files(&self) -> &[(String, Vec<u8>)] {
+        &self.files
+    }
 }
 
 impl Default for Bundle {

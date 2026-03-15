@@ -96,6 +96,16 @@ impl Client {
         Self::new(ClientConfig::default())
     }
 
+    /// Get a reference to the base URL.
+    pub(crate) fn base_url(&self) -> &str {
+        &self.config.base_url
+    }
+
+    /// Get a reference to the HTTP client.
+    pub(crate) const fn http_client(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     /// Submit a task and wait for the HTTP response.
     ///
     /// # Errors

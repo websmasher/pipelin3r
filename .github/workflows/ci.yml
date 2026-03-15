@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-packages:
+    name: Packages (check + test + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-deny
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo deny check
+
+  check-shedul3r:
+    name: shedul3r (check + test + clippy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/shedul3r
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/shedul3r
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  golden-tests:
+    name: Golden Tests
+    runs-on: ubuntu-latest
+    needs: check-shedul3r
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/shedul3r
+      - run: cd apps/shedul3r && cargo build --release
+      - run: bash golden-tests/compare.sh apps/shedul3r/target/release/shedul3r

@@ -248,11 +248,39 @@ impl<'a> AgentBuilder<'a> {
             );
         }
 
+        // Remote bundle upload (when remote mode is enabled and a bundle is present).
+        let bundle_handle = if self.executor.is_remote() {
+            if let Some(ref bundle) = self.bundle_data {
+                let file_refs: Vec<(&str, &[u8])> = bundle
+                    .files()
+                    .iter()
+                    .map(|(name, content)| (name.as_str(), content.as_slice()))
+                    .collect();
+                Some(
+                    self.executor
+                        .sdk_client()
+                        .upload_bundle(&file_refs)
+                        .await?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Use remote path as working directory when a bundle was uploaded.
+        let working_directory = if let Some(ref handle) = bundle_handle {
+            Some(handle.remote_path.clone())
+        } else {
+            self.working_dir.as_ref().map(|p| p.display().to_string())
+        };
+
         // Real execution via SDK.
         let payload = TaskPayload {
             task: task_yaml,
             input: prompt,
-            working_directory: self.working_dir.map(|p| p.display().to_string()),
+            working_directory,
             environment: env,
         };
 
@@ -264,6 +292,40 @@ impl<'a> AgentBuilder<'a> {
         } else {
             self.executor.sdk_client().submit_task(&payload).await?
         };
+
+        // Download expected outputs from remote bundle.
+        if let Some(ref handle) = bundle_handle {
+            if let Some(ref bundle) = self.bundle_data {
+                for output_path in bundle.expected_output_paths() {
+                    let bytes = self
+                        .executor
+                        .sdk_client()
+                        .download_file(&handle.id, output_path)
+                        .await?;
+
+                    // Write downloaded file to the local working directory or temp.
+                    let local_dir = self
+                        .working_dir
+                        .as_deref()
+                        .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
+                    let local_path = local_dir.join(output_path);
+                    if let Some(parent) = local_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&local_path, &bytes)?;
+                }
+            }
+
+            // Clean up remote bundle.
+            let delete_result = self
+                .executor
+                .sdk_client()
+                .delete_bundle(&handle.id)
+                .await;
+            if let Err(e) = delete_result {
+                tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
+            }
+        }
 
         Ok(AgentResult {
             success: result.success,
@@ -371,6 +433,7 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
             Arc::new(Mutex::new((0..total).map(|_| None).collect()));
 
         let client = self.executor.sdk_client().clone();
+        let remote = self.executor.is_remote();
 
         let results_for_pool = Arc::clone(&results_store);
         let _pool_outcomes = run_pool(tasks, self.concurrency, move |pair, index| {
@@ -378,7 +441,7 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
             let store = Arc::clone(&results_for_pool);
             async move {
                 let (task, cfg) = pair;
-                let result = execute_single_task(&task, &cfg, &client).await;
+                let result = execute_single_task(&task, &cfg, &client, remote).await;
                 {
                     let mut guard = store
                         .lock()
@@ -481,6 +544,7 @@ async fn execute_single_task(
     task: &AgentTask,
     config: &BatchConfig,
     client: &shedul3r_rs_sdk::Client,
+    remote: bool,
 ) -> anyhow::Result<AgentResult> {
     let prompt = task
         .prompt
@@ -507,10 +571,32 @@ async fn execute_single_task(
 
     let env = merge_env(auth_env, None);
 
+    // Remote bundle upload when enabled.
+    let bundle_handle = if remote {
+        if let Some(ref bundle) = task.bundle_data {
+            let file_refs: Vec<(&str, &[u8])> = bundle
+                .files()
+                .iter()
+                .map(|(name, content)| (name.as_str(), content.as_slice()))
+                .collect();
+            Some(client.upload_bundle(&file_refs).await?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let working_directory = if let Some(ref handle) = bundle_handle {
+        Some(handle.remote_path.clone())
+    } else {
+        task.working_dir.as_ref().map(|p| p.display().to_string())
+    };
+
     let payload = TaskPayload {
         task: task_yaml,
         input: prompt.clone(),
-        working_directory: task.working_dir.as_ref().map(|p| p.display().to_string()),
+        working_directory,
         environment: env,
     };
 
@@ -519,6 +605,31 @@ async fn execute_single_task(
     } else {
         client.submit_task(&payload).await?
     };
+
+    // Download expected outputs from remote bundle.
+    if let Some(ref handle) = bundle_handle {
+        if let Some(ref bundle) = task.bundle_data {
+            for output_path in bundle.expected_output_paths() {
+                let bytes = client.download_file(&handle.id, output_path).await?;
+
+                let local_dir = task
+                    .working_dir
+                    .clone()
+                    .unwrap_or_else(std::env::temp_dir);
+                let local_path = local_dir.join(output_path);
+                if let Some(parent) = local_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&local_path, &bytes)?;
+            }
+        }
+
+        // Clean up remote bundle.
+        let delete_result = client.delete_bundle(&handle.id).await;
+        if let Err(e) = delete_result {
+            tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
+        }
+    }
 
     Ok(AgentResult {
         success: result.success,

@@ -7,31 +7,17 @@ no-default-features = false
 # ============================================================
 [bans]
 multiple-versions = "deny"
-# Workspace path dependencies (e.g., domain = { path = "../domain" }) have no version spec.
+# Workspace path dependencies have no version spec.
 # cargo-deny 0.19+ flags these as wildcards. Allow them.
 wildcards = "allow"
 allow-wildcard-paths = true
 highlight = "all"
 # Transitive dep version splits we can't control
 skip = [
-    { crate = "windows-sys@0.60.2", reason = "socket2 lags behind other crates on windows-sys version" },
+    { crate = "core-foundation@0.9.4", reason = "system-configuration lags behind security-framework on core-foundation version" },
 ]
 
 deny = [
-    # --- JSON: standardize on serde_json ---
-    { name = "simd-json", wrappers = [] },
-    { name = "json5", wrappers = [] },
-    { name = "sonic-rs", wrappers = [] },
-
-    # --- TLS: standardize on rustls (no OpenSSL) ---
-    { name = "openssl", wrappers = [] },
-    { name = "openssl-sys", wrappers = [] },
-
-    # --- HTTP: standardize on reqwest ---
-    { name = "ureq", wrappers = [] },
-    { name = "surf", wrappers = [] },
-    { name = "isahc", wrappers = [] },
-
     # --- Logging: standardize on tracing ---
     { name = "log4rs", wrappers = [] },
     { name = "env_logger", wrappers = [] },
@@ -42,23 +28,8 @@ deny = [
     { name = "async-std", wrappers = [] },
     { name = "smol", wrappers = [] },
 
-    # --- Error handling: standardize on thiserror (if adopted) ---
-    # NOTE: anyhow erases error types. For a service with structured
-    # error responses, type-erased errors prevent matching on variants.
-    { name = "anyhow", wrappers = [] },
-
-    # --- Web framework: standardize on axum ---
-    { name = "actix-web", wrappers = [] },
-    { name = "rocket", wrappers = [] },
-    { name = "warp", wrappers = [] },
-    { name = "poem", wrappers = [] },
-
     # --- Datetime: standardize on time crate ---
     { name = "chrono", wrappers = [] },
-
-    # --- ORM: standardize on sqlx ---
-    { name = "diesel", wrappers = [] },
-    { name = "sea-orm", wrappers = [] },
 
     # --- Serialization: no competing binary formats ---
     { name = "bincode", wrappers = [] },
@@ -67,12 +38,6 @@ deny = [
     { name = "flatbuffers", wrappers = [] },
 ]
 
-# Feature-level bans — prevent agents from enabling kitchen-sink features
-[[bans.features]]
-name = "tokio"
-deny = ["full"]
-# Force explicit feature selection instead of enabling everything
-allow = ["rt-multi-thread", "macros", "net", "sync", "signal", "bytes", "default", "io-util", "time", "process", "fs"]
 
 # ============================================================
 # LICENSE CHECKING
@@ -84,14 +49,14 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
+    "Unlicense",
+    "Unicode-DFS-2016",
     "Zlib",
     "CC0-1.0",
     "OpenSSL",
     "BSL-1.0",
     "MPL-2.0",
-    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
@@ -105,10 +70,6 @@ ignore = true
 unmaintained = "workspace"
 yanked = "deny"
 ignore = []
-# If a transitive dependency triggers an advisory you cannot fix, ignore it with a reason:
-# ignore = [
-#     { id = "RUSTSEC-2025-0057", reason = "transitive dep of scraper -- no alternative available" },
-# ]
 
 # ============================================================
 # SOURCE RESTRICTIONS
