@@ -125,6 +125,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mutant_kill_pool_zero_concurrency_runs_all() {
+        // Mutant kill: pool.rs:31 — `== with !=` on `if concurrency == 0 { 1 }`
+        // With concurrency=0, the pool must still run all items (effective concurrency=1).
+        // If mutated to !=, concurrency=0 would not be corrected to 1, causing
+        // Semaphore::new(0) which deadlocks.
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        let items: Vec<usize> = (0..3).collect();
+        let results = run_pool(items, 0, move |_item, _index| {
+            let c = Arc::clone(&counter_clone);
+            async move {
+                let _ = c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+        })
+        .await;
+
+        assert_eq!(results.len(), 3, "should have one result per item");
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            3,
+            "all 3 items must be processed even with concurrency=0"
+        );
+        for (i, r) in results.iter().enumerate() {
+            assert!(r.is_ok(), "item {i} should succeed");
+        }
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_pool_empty_items_returns_empty() {
+        // Mutant kill: pool.rs:31 — `== with !=` also means concurrency=2 (nonzero)
+        // would be wrongly set to 1 via the mutant. But more importantly, empty vec
+        // must return empty results regardless.
+        let items: Vec<usize> = vec![];
+        let results = run_pool(items, 0, |_item, _index| async { Ok(()) }).await;
+        assert!(
+            results.is_empty(),
+            "empty input with concurrency=0 must produce empty output"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_items_returns_empty() {
         let items: Vec<usize> = vec![];
         let results = run_pool(items, 2, |_item, _index| async { Ok(()) }).await;

@@ -216,6 +216,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mutant_kill_eviction_triggers_at_max_tracked_keys() {
+        // Mutant kill: bulkhead.rs:95 — replace > with ==/</>=/>=
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Fill to exactly MAX_TRACKED_KEYS (no eviction should happen yet)
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = format!("fill-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        // Verify map is at MAX_TRACKED_KEYS
+        let size_before = bh.state.read().len();
+        assert_eq!(
+            size_before, MAX_TRACKED_KEYS,
+            "map should be at exactly MAX_TRACKED_KEYS"
+        );
+
+        // Add one more — should trigger eviction (map.len() > MAX_TRACKED_KEYS)
+        bh.acquire("trigger", &config).await.unwrap();
+        bh.release("trigger");
+
+        let size_after = bh.state.read().len();
+        assert!(
+            size_after <= MAX_TRACKED_KEYS,
+            "eviction should have reduced map size to at most MAX_TRACKED_KEYS, got {size_after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_eviction_does_not_trigger_below_max() {
+        // Mutant kill: bulkhead.rs:95 — replace > with < or <=
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Fill to MAX_TRACKED_KEYS - 1 (below threshold)
+        let below_max = MAX_TRACKED_KEYS.saturating_sub(1);
+        for i in 0..below_max {
+            let key = format!("fill-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        let size = bh.state.read().len();
+        assert_eq!(
+            size, below_max,
+            "no eviction should happen below MAX_TRACKED_KEYS"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_config_change_replaces_semaphore() {
+        // Mutant kill: bulkhead.rs:87 — replace != with == (config change detection)
+        let bh = InMemoryBulkhead::new();
+        let config2 = test_config(2, Duration::from_millis(100));
+        let config5 = test_config(5, Duration::from_millis(100));
+
+        // Create key with max_concurrent=2
+        bh.acquire("key-x", &config2).await.unwrap();
+        bh.release("key-x");
+
+        // Acquire 3 permits with max_concurrent=5 — should succeed if config was updated
+        bh.acquire("key-x", &config5).await.unwrap();
+        bh.acquire("key-x", &config5).await.unwrap();
+        bh.acquire("key-x", &config5).await.unwrap();
+
+        // If config change was NOT detected (mutant: != replaced with ==),
+        // the old semaphore with 2 permits would still be in use and the 3rd acquire
+        // would have succeeded only because we released one earlier. Let's verify
+        // we can get 4th and 5th permits too.
+        bh.acquire("key-x", &config5).await.unwrap();
+        let fifth = bh
+            .acquire("key-x", &test_config(5, Duration::from_millis(50)))
+            .await;
+        assert!(
+            fifth.is_ok(),
+            "config change to max_concurrent=5 must allow 5 concurrent permits"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_config_match_returns_cached_semaphore() {
+        // Mutant kill: bulkhead.rs:58 — replace == with != (config match check)
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Acquire the single permit
+        bh.acquire("key-a", &config).await.unwrap();
+
+        // Second acquire with SAME config should see the existing semaphore (0 permits left)
+        let result = bh
+            .acquire("key-a", &test_config(1, Duration::from_millis(50)))
+            .await;
+        assert!(
+            result.is_err(),
+            "same config must reuse cached semaphore (no permits left)"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_eviction_keeps_keys_with_outstanding_permits() {
+        // Mutant kill: bulkhead.rs:98-99 — replace || with && and < with other comparisons
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(2, Duration::from_millis(100));
+
+        // Create a key with an outstanding permit (not all permits available)
+        bh.acquire("busy-key", &config).await.unwrap();
+        // busy-key has 1 of 2 permits used — available_permits=1 < max_concurrent=2
+
+        // Fill to MAX_TRACKED_KEYS with idle keys (all permits released)
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = format!("idle-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        // Trigger eviction
+        bh.acquire("trigger-evict", &config).await.unwrap();
+        bh.release("trigger-evict");
+
+        // busy-key must survive eviction because it has outstanding permits
+        let map = bh.state.read();
+        assert!(
+            map.contains_key("busy-key"),
+            "key with outstanding permits must survive eviction"
+        );
+    }
+
+    #[tokio::test]
     async fn times_out_when_all_permits_taken() {
         let bh = InMemoryBulkhead::new();
         let config = test_config(1, Duration::from_millis(50));

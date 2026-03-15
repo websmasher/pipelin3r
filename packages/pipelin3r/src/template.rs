@@ -270,6 +270,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mutant_kill_template_overlapping_keys() {
+        // Mutant kill: template.rs:133 — `> with ==` and `> with >=` on overlap check
+        // `if m.start.saturating_add(m.key_len) > prev.start`
+        // Test with overlapping keys: {{A}} and {{AB}} where one is prefix of another.
+        // The shorter key's match overlaps with the longer key's match position.
+        let filler = TemplateFiller::new()
+            .set("{{A}}", "alpha")
+            .set("{{AB}}", "alphabeta");
+
+        // "{{AB}}" contains "{{A}}" as a prefix — both will match starting at the same position.
+        let result = filler.fill("value={{AB}}");
+        // The longer key "{{AB}}" should win because it starts at the same position.
+        // Actually, both "{{A}}" matches at pos 6 and "{{AB}}" matches at pos 6.
+        // After sorting descending and dedup, the one with the lower start (same here)
+        // is kept when they overlap. Since both start at 6, one will be in deduped first
+        // and the other will overlap. The first in sorted-descending order is the one
+        // with the same start but we need to check which order they appear.
+        // The key thing: the result must be deterministic and not corrupt the string.
+        assert!(
+            result == "value=alphabeta" || result == "value=alphaB}}",
+            "overlapping keys must produce a valid result without corruption: {result}"
+        );
+
+        // Non-overlapping case: keys at different positions must both be replaced.
+        let filler2 = TemplateFiller::new()
+            .set("{{X}}", "ex")
+            .set("{{Y}}", "why");
+        let result2 = filler2.fill("{{X}} and {{Y}}");
+        assert_eq!(
+            result2, "ex and why",
+            "non-overlapping keys must both be replaced"
+        );
+
+        // Adjacent keys (not overlapping): {{A}} immediately followed by {{B}}.
+        let filler3 = TemplateFiller::new()
+            .set("{{A}}", "1")
+            .set("{{B}}", "2");
+        let result3 = filler3.fill("{{A}}{{B}}");
+        assert_eq!(
+            result3, "12",
+            "adjacent non-overlapping keys must both be replaced"
+        );
+
+        // Overlap where one key's end touches another's start (boundary case for > vs >=).
+        // "{{A}}" at pos 0 ends at pos 5. "{{B}}" at pos 5 starts at pos 5.
+        // 0 + 5 > 5 is false, so no overlap — both should be replaced.
+        // If mutated to >=, 0 + 5 >= 5 is true, incorrectly skipping {{B}}.
+        let filler4 = TemplateFiller::new()
+            .set("{{A}}", "1")
+            .set("{{B}}", "2");
+        let result4 = filler4.fill("{{A}}{{B}}rest");
+        assert_eq!(
+            result4, "12rest",
+            "keys touching at boundary must both be replaced (> not >=)"
+        );
+    }
+
     // ── Regression tests ────────────────────────────────────────────
 
     #[test]

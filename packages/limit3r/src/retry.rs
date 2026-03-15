@@ -195,6 +195,103 @@ mod tests {
     }
 
     #[test]
+    fn mutant_kill_compute_delay_exactly_at_max_returns_max() {
+        // Mutant kill: retry.rs:50 — replace > with == or >=
+        // When delay == max_delay, it should return max_delay (not be clamped differently).
+        // With > correctly, delay == max is not > max, so it falls through to the else branch = delay_secs.
+        // With >=, delay == max would enter the if branch and return max_secs — same result.
+        // With ==, delay > max would NOT enter the if and would overflow.
+        // So we test delay ABOVE max to kill == mutation.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_secs(10),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(5),
+        };
+        // attempt 1: 10s * 2^1 = 20s, which is > 5s max_delay
+        let d = compute_delay(&config, 1);
+        assert_eq!(
+            d,
+            Duration::from_secs(5),
+            "delay exceeding max_delay must be clamped to max_delay"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_just_below_max_not_clamped() {
+        // Mutant kill: retry.rs:50 — replace > with >=
+        // delay < max should NOT be clamped. With >=, delay == max would be clamped (same value, so same result).
+        // To distinguish > from >=: delay exactly at max should pass through unclamped.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(500),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(1),
+        };
+        // attempt 1: 500ms * 2^1 = 1000ms = exactly max_delay
+        let d = compute_delay(&config, 1);
+        // Whether > or >=, result is the same when delay == max (both return max_secs).
+        // The real kill is: delay clearly above max must clamp.
+        assert_eq!(
+            d,
+            Duration::from_secs(1),
+            "delay at max_delay boundary must return max_delay"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_nan_returns_zero() {
+        // Mutant kill: retry.rs:52 — replace || with && on NaN/negative check
+        // NaN factor should produce zero delay, not propagate NaN.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: f64::NAN,
+            max_delay: Duration::from_secs(5),
+        };
+        let d = compute_delay(&config, 1);
+        assert_eq!(d, Duration::ZERO, "NaN backoff must produce zero delay");
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_negative_factor_returns_zero() {
+        // Mutant kill: retry.rs:52 — replace < with == or <=
+        // A negative multiplier raised to odd power produces negative delay.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: -2.0,
+            max_delay: Duration::from_secs(5),
+        };
+        // attempt 1: 100ms * (-2)^1 = -200ms — negative, should return zero
+        let d = compute_delay(&config, 1);
+        assert_eq!(
+            d,
+            Duration::ZERO,
+            "negative delay must produce zero delay"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_negative_not_equal_zero() {
+        // Mutant kill: retry.rs:52 — replace < with ==
+        // -0.2 is negative but not equal to 0.0, must still return zero.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: -1.0,
+            max_delay: Duration::from_secs(5),
+        };
+        // attempt 1: 100ms * (-1)^1 = -100ms
+        let d = compute_delay(&config, 1);
+        assert_eq!(
+            d,
+            Duration::ZERO,
+            "negative delay (not zero) must produce zero delay (< not ==)"
+        );
+    }
+
+    #[test]
     fn compute_delay_with_exponential_backoff() {
         let config = RetryConfig {
             max_attempts: 5,

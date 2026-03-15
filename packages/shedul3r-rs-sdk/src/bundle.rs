@@ -242,6 +242,145 @@ mod tests {
         );
     }
 
+    /// Start a TCP listener that responds with a fixed HTTP response to any request.
+    fn spawn_http_mock(
+        status: u16,
+        status_text: &str,
+        body: &str,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        let response = format!(
+            "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|_| std::process::abort());
+        let addr = listener.local_addr().unwrap_or_else(|_| std::process::abort());
+        let handle = std::thread::spawn(move || {
+            // Accept up to 5 connections (enough for our tests).
+            for _ in 0..5 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    // Read request (we don't care about contents).
+                    let mut buf = [0u8; 4096];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    let _ = std::io::Write::flush(&mut stream);
+                }
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_upload_bundle_checks_success_status() {
+        // Mutant kill: bundle.rs:68 — `delete !` flips `!resp.status().is_success()`
+        // A 400 response must return Err, not Ok.
+        let (addr, _handle) = spawn_http_mock(400, "Bad Request", r#"{"error":"bad"}"#);
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: std::time::Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+        let files: Vec<(&str, &[u8])> = vec![("test.txt", b"hello")];
+        let result = client.upload_bundle(&files).await;
+        assert!(
+            result.is_err(),
+            "upload_bundle must return Err for HTTP 400, not Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_download_checks_success_status() {
+        // Mutant kill: bundle.rs:105 — `delete !` flips `!resp.status().is_success()`
+        // A 404 response must return Err, not Ok.
+        let (addr, _handle) = spawn_http_mock(404, "Not Found", r#"{"error":"not found"}"#);
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: std::time::Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+        let result = client.download_file("some-id", "file.txt").await;
+        assert!(
+            result.is_err(),
+            "download_file must return Err for HTTP 404, not Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_delete_checks_success_status() {
+        // Mutant kill: bundle.rs:133 — `delete !` flips `!resp.status().is_success()`
+        // A 500 response must return Err, not Ok.
+        let (addr, _handle) = spawn_http_mock(500, "Internal Server Error", r#"{"error":"fail"}"#);
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: std::time::Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+        let result = client.delete_bundle("some-id").await;
+        assert!(
+            result.is_err(),
+            "delete_bundle must return Err for HTTP 500, not Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_upload_bundle_success_returns_ok() {
+        // Mutant kill: bundle.rs:68 — `delete !` also means success is treated as error.
+        // A 200 response with valid JSON must return Ok.
+        let (addr, _handle) = spawn_http_mock(200, "OK", r#"{"id":"b-123","path":"/tmp/bundles/b-123"}"#);
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: std::time::Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+        let files: Vec<(&str, &[u8])> = vec![("test.txt", b"hello")];
+        let result = client.upload_bundle(&files).await;
+        assert!(
+            result.is_ok(),
+            "upload_bundle must return Ok for HTTP 200, not Err: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_download_success_returns_bytes() {
+        // Mutant kill: bundle.rs:105 — verify success path returns Ok with body bytes.
+        let (addr, _handle) = spawn_http_mock(200, "OK", "file-content-here");
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: std::time::Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+        let result = client.download_file("some-id", "file.txt").await;
+        assert!(
+            result.is_ok(),
+            "download_file must return Ok for HTTP 200: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_delete_success_returns_ok() {
+        // Mutant kill: bundle.rs:133 — verify success path returns Ok.
+        let (addr, _handle) = spawn_http_mock(200, "OK", "{}");
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: std::time::Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+        let result = client.delete_bundle("some-id").await;
+        assert!(
+            result.is_ok(),
+            "delete_bundle must return Ok for HTTP 200: {:?}",
+            result.err()
+        );
+    }
+
     #[tokio::test]
     async fn delete_bundle_returns_error_on_connection_refused() {
         let config = ClientConfig {
