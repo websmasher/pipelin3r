@@ -1,1 +1,177 @@
-//\! TODO: extract from shedul3r
+//! Pipeline executor — wraps the SDK client with authentication and dry-run support.
+
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use shedul3r_rs_sdk::{Client, ClientConfig};
+
+use crate::agent::AgentBuilder;
+use crate::auth::Auth;
+
+/// Pipeline executor that manages SDK client, authentication, and dry-run mode.
+pub struct Executor {
+    client: Client,
+    default_auth: Option<Auth>,
+    dry_run: Option<Mutex<DryRunConfig>>,
+}
+
+/// Configuration for dry-run capture mode.
+pub(crate) struct DryRunConfig {
+    pub base_dir: PathBuf,
+    pub counter: usize,
+}
+
+impl Executor {
+    /// Create a new executor with the given SDK client configuration.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK client cannot be built.
+    pub fn new(config: &ClientConfig) -> anyhow::Result<Self> {
+        let client = Client::new(config.clone())?;
+        Ok(Self {
+            client,
+            default_auth: None,
+            dry_run: None,
+        })
+    }
+
+    /// Create a new executor with default SDK configuration.
+    ///
+    /// # Errors
+    /// Returns an error if the SDK client cannot be built.
+    pub fn with_defaults() -> anyhow::Result<Self> {
+        Self::new(&ClientConfig::default())
+    }
+
+    /// Set the default authentication for all agent invocations.
+    #[must_use]
+    pub fn with_default_auth(mut self, auth: Auth) -> Self {
+        self.default_auth = Some(auth);
+        self
+    }
+
+    /// Enable dry-run mode: capture prompts and task definitions to disk
+    /// instead of making HTTP calls.
+    #[must_use]
+    pub fn with_dry_run(mut self, capture_dir: PathBuf) -> Self {
+        self.dry_run = Some(Mutex::new(DryRunConfig {
+            base_dir: capture_dir,
+            counter: 0,
+        }));
+        self
+    }
+
+    /// Create an agent builder for a named agent.
+    pub fn agent(&self, name: &str) -> AgentBuilder<'_> {
+        AgentBuilder::new(self, name)
+    }
+
+    /// Get a reference to the underlying SDK client.
+    pub(crate) const fn sdk_client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Get the default auth, if set.
+    pub(crate) const fn default_auth(&self) -> Option<&Auth> {
+        self.default_auth.as_ref()
+    }
+
+    /// Get the dry-run config mutex, if dry-run is enabled.
+    pub(crate) const fn dry_run_config(&self) -> Option<&Mutex<DryRunConfig>> {
+        self.dry_run.as_ref()
+    }
+}
+
+/// Extract a step name slug from the task YAML's `name:` field.
+///
+/// Falls back to `"unknown"` if no name field is found.
+pub(crate) fn extract_step_name(task_yaml: &str) -> String {
+    for line in task_yaml.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("name:") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                let raw_slug: String = name
+                    .to_lowercase()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                    .collect();
+                // Collapse consecutive dashes.
+                let mut slug = String::with_capacity(raw_slug.len());
+                let mut prev_dash = false;
+                for c in raw_slug.chars() {
+                    if c == '-' {
+                        if !prev_dash {
+                            slug.push(c);
+                        }
+                        prev_dash = true;
+                    } else {
+                        slug.push(c);
+                        prev_dash = false;
+                    }
+                }
+                let trimmed_slug = slug.trim_matches('-').to_owned();
+                if !trimmed_slug.is_empty() {
+                    return trimmed_slug;
+                }
+            }
+        }
+    }
+    String::from("unknown")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_step_name_basic() {
+        let yaml = "name: 3_1_implement_tests\ncommand: echo\n";
+        assert_eq!(
+            extract_step_name(yaml),
+            "3-1-implement-tests",
+            "should slugify name field"
+        );
+    }
+
+    #[test]
+    fn extract_step_name_missing() {
+        let yaml = "command: echo\ntimeout: 5m\n";
+        assert_eq!(
+            extract_step_name(yaml),
+            "unknown",
+            "should fallback to unknown when name is missing"
+        );
+    }
+
+    #[test]
+    fn extract_step_name_special_chars() {
+        let yaml = "name: Hello World! (v2)\n";
+        assert_eq!(
+            extract_step_name(yaml),
+            "hello-world-v2",
+            "should replace non-alphanumeric with dashes, collapsing consecutive dashes"
+        );
+    }
+
+    #[test]
+    fn executor_with_defaults_succeeds() {
+        let result = Executor::with_defaults();
+        assert!(result.is_ok(), "should create executor with defaults");
+    }
+
+    #[test]
+    fn executor_with_dry_run() {
+        let executor = Executor::with_defaults()
+            .unwrap_or_else(|_| {
+                Executor::new(&ClientConfig::default())
+                    .unwrap_or_else(|_| std::process::abort())
+            })
+            .with_dry_run(PathBuf::from("/tmp/test-dry-run"));
+
+        assert!(
+            executor.dry_run_config().is_some(),
+            "dry run should be enabled"
+        );
+    }
+}

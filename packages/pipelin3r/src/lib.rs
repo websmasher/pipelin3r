@@ -1,25 +1,35 @@
 //! Pipeline orchestration for LLM-powered workflows.
+//!
+//! `pipelin3r` provides a high-level builder API for orchestrating LLM agent
+//! invocations, shell commands, and data transforms in a pipeline. It wraps
+//! the `shedul3r-rs-sdk` HTTP client with authentication, dry-run capture,
+//! and bounded-concurrency batch execution.
 
-// Suppress unused-crate-dependencies for stub modules.
-use anyhow as _;
-use serde as _;
-use serde_json as _;
-use shedul3r_rs_sdk as _;
-use tokio as _;
-use toml as _;
-use tracing as _;
-
-/// Step executor for running pipeline stages.
-pub mod executor;
-/// Agent interaction and management.
-pub mod agent;
-/// Command definitions and parsing.
-pub mod command;
-/// Data transformation utilities.
-pub mod transform;
-/// Bundle packaging and extraction.
-pub mod bundle;
-/// Template rendering and interpolation.
-pub mod template;
-/// Authentication and authorization.
+/// Per-invocation authentication.
 pub mod auth;
+/// Agent builder for single LLM invocations.
+pub mod agent;
+/// Bundle packaging for file transfer.
+pub mod bundle;
+/// Shell command execution.
+pub mod command;
+/// Pipeline executor (SDK client + auth + dry-run).
+pub mod executor;
+/// Bounded async concurrency pool.
+pub mod pool;
+/// Two-phase template filler.
+pub mod template;
+/// Pure function transforms (stub).
+pub mod transform;
+
+// Private: task YAML builder used by agent.rs.
+pub(crate) mod task;
+
+pub use agent::{AgentBuilder, AgentResult};
+pub use auth::Auth;
+pub use bundle::Bundle;
+pub use command::{CommandBuilder, CommandResult};
+pub use executor::Executor;
+pub use pool::run_pool;
+pub use template::TemplateFiller;
+pub use transform::TransformBuilder;
