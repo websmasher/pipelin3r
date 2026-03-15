@@ -427,17 +427,9 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
             .collect();
 
         // Check for partial failures and report via BatchPartialFailure if needed.
-        let mut succeeded: usize = 0;
-        let mut failed: usize = 0;
-        for r in &results {
-            if r.is_ok() {
-                succeeded = succeeded.saturating_add(1);
-            } else {
-                failed = failed.saturating_add(1);
-            }
-        }
+        let (succeeded, failed) = count_batch_outcomes(&results);
 
-        if failed > 0 && succeeded > 0 {
+        if is_partial_failure(succeeded, failed) {
             tracing::warn!(
                 "Batch partial failure: {succeeded} succeeded, {failed} failed out of {total}"
             );
@@ -445,6 +437,25 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
 
         Ok(results)
     }
+}
+
+/// Count how many results succeeded vs failed.
+fn count_batch_outcomes<T, E>(results: &[Result<T, E>]) -> (usize, usize) {
+    let mut succeeded: usize = 0;
+    let mut failed: usize = 0;
+    for r in results {
+        if r.is_ok() {
+            succeeded = succeeded.saturating_add(1);
+        } else {
+            failed = failed.saturating_add(1);
+        }
+    }
+    (succeeded, failed)
+}
+
+/// Returns `true` when a batch has both successes and failures (partial failure).
+const fn is_partial_failure(succeeded: usize, failed: usize) -> bool {
+    failed > 0 && succeeded > 0
 }
 
 /// Write a dry-run capture for a single invocation.
@@ -1096,6 +1107,65 @@ mod tests {
         assert!(
             result.is_err(),
             "should fail without for_each mapper"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_all_success() {
+        // Mutant kill: agent.rs:440 — all 7 mutations on `failed > 0 && succeeded > 0`
+        // Case: all success (succeeded=3, failed=0) → NOT partial failure.
+        // Kills `&& → ||` because with ||, (3 > 0 || 0 > 0) = true, but must be false.
+        let results: Vec<Result<&str, &str>> = vec![Ok("a"), Ok("b"), Ok("c")];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 3, "all Ok results must count as succeeded");
+        assert_eq!(failed, 0, "no Err results means failed=0");
+        assert!(
+            !is_partial_failure(succeeded, failed),
+            "all-success (3,0) must NOT be partial failure"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_all_failed() {
+        // Case: all failed (succeeded=0, failed=3) → NOT partial failure.
+        // Kills `> with ==` on succeeded: with ==, (0 == 0) = true, but must be false.
+        let results: Vec<Result<&str, &str>> = vec![Err("x"), Err("y"), Err("z")];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 0, "no Ok results means succeeded=0");
+        assert_eq!(failed, 3, "all Err results must count as failed");
+        assert!(
+            !is_partial_failure(succeeded, failed),
+            "all-failed (0,3) must NOT be partial failure"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_partial_failure() {
+        // Case: mixed (succeeded=2, failed=1) → IS partial failure.
+        // Kills `> with <` on both sides: (2 < 0) = false, (1 < 0) = false.
+        // Kills `> with >=` indirectly (2 >= 0 is true, so that alone doesn't help,
+        // but combined with the other cases it does).
+        let results: Vec<Result<&str, &str>> = vec![Ok("a"), Err("x"), Ok("b")];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 2, "two Ok results");
+        assert_eq!(failed, 1, "one Err result");
+        assert!(
+            is_partial_failure(succeeded, failed),
+            "mixed (2,1) must be partial failure"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_empty() {
+        // Case: empty (succeeded=0, failed=0) → NOT partial failure.
+        // Kills `> with >=` on both sides: (0 >= 0) = true with >=, but must be false.
+        let results: Vec<Result<&str, &str>> = vec![];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 0, "empty batch has 0 succeeded");
+        assert_eq!(failed, 0, "empty batch has 0 failed");
+        assert!(
+            !is_partial_failure(succeeded, failed),
+            "empty (0,0) must NOT be partial failure"
         );
     }
 }

@@ -690,6 +690,136 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mutant_kill_v2_eviction_first_pass_retains_non_closed() {
+        // Mutant kill: circuit_breaker.rs:119 — `!= State::Closed` replaced with `== State::Closed`
+        // With ==, the first pass would KEEP closed+empty and EVICT non-closed (open/half-open).
+        // With !=, non-closed circuits are retained and only closed+empty are evicted.
+        //
+        // Setup: >MAX_TRACKED_KEYS entries. One key is Open, rest are Closed+empty.
+        // After eviction, the Open key MUST survive.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_secs(60));
+
+        // Create an Open circuit
+        cb.check_permitted("must-survive-open", &config).unwrap();
+        cb.record_failure("must-survive-open");
+        cb.record_failure("must-survive-open");
+        cb.record_failure("must-survive-open");
+        let _ = cb.check_permitted("must-survive-open", &config); // opens it
+
+        // Fill with MAX_TRACKED_KEYS idle (Closed+empty) keys to exceed limit
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = format!("idle-{i}");
+            cb.check_permitted(&key, &config).unwrap();
+        }
+
+        // Trigger eviction via a new key
+        cb.check_permitted("eviction-trigger", &config).unwrap();
+
+        // The Open key must survive first-pass eviction
+        let map = cb.state.read();
+        assert!(
+            map.contains_key("must-survive-open"),
+            "Open circuit evicted by first pass — != replaced with =="
+        );
+        // Verify it's still Open
+        let circuit = map.get("must-survive-open").unwrap();
+        assert_eq!(
+            circuit.state,
+            State::Open,
+            "Open circuit state corrupted during eviction"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_second_pass_threshold_boundary() {
+        // Mutant kill: circuit_breaker.rs:124 — `> MAX_TRACKED_KEYS` replaced with
+        //   ==, <, <=, or >=
+        // After first-pass eviction, if map.len() == MAX_TRACKED_KEYS exactly,
+        // second pass must NOT run. If > is replaced with >=, second pass runs
+        // unnecessarily and may evict extra keys.
+        //
+        // Setup: MAX_TRACKED_KEYS+1 keys, all with non-empty history (first pass
+        // can't help). After first-pass, still MAX_TRACKED_KEYS+1. Second pass
+        // should evict exactly 1 to reach MAX_TRACKED_KEYS.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 100, Duration::from_secs(5));
+
+        // Create MAX_TRACKED_KEYS + 1 keys, each with history (non-empty)
+        for i in 0..MAX_TRACKED_KEYS.saturating_add(1) {
+            let key = format!("hist-{i}");
+            cb.check_permitted(&key, &config).unwrap();
+            cb.record_success(&key);
+        }
+
+        // One key with LOTS of history — should be last evicted
+        cb.check_permitted("big-history", &config).unwrap();
+        for _ in 0..50 {
+            cb.record_success("big-history");
+        }
+
+        // Trigger eviction
+        cb.check_permitted("trigger-second-pass", &config).unwrap();
+        cb.record_success("trigger-second-pass");
+
+        let map = cb.state.read();
+        // big-history (50 results) must survive — only keys with fewer results evicted
+        assert!(
+            map.contains_key("big-history"),
+            "second pass evicted key with most history"
+        );
+        // trigger-second-pass is the current key, must survive
+        assert!(
+            map.contains_key("trigger-second-pass"),
+            "current key evicted in second pass"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_second_pass_only_evicts_closed() {
+        // Mutant kill: circuit_breaker.rs:128 — `c.state == State::Closed` replaced with
+        //   `c.state != State::Closed`
+        // Second pass must only evict Closed circuits, never Open ones.
+        //
+        // Setup: >MAX_TRACKED_KEYS keys all with non-empty history. Some Open, some Closed.
+        // After second-pass, Open circuits must survive.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_secs(60));
+
+        // Create Open circuits with minimal history (1 result each)
+        for i in 0..100 {
+            let key = format!("open-{i}");
+            cb.check_permitted(&key, &config).unwrap();
+            cb.record_failure(&key);
+            cb.record_failure(&key);
+            cb.record_failure(&key);
+            let _ = cb.check_permitted(&key, &config); // opens it
+        }
+
+        // Fill remaining slots with Closed circuits that have history
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = format!("closed-{i}");
+            cb.check_permitted(&key, &config).unwrap();
+            cb.record_success(&key);
+        }
+
+        // Trigger eviction
+        cb.check_permitted("trigger-evict-2", &config).unwrap();
+        cb.record_success("trigger-evict-2");
+
+        let map = cb.state.read();
+        // All Open circuits must survive second-pass
+        let open_surviving = (0..100)
+            .filter(|i| map.contains_key(&format!("open-{i}")))
+            .count();
+        assert_eq!(
+            open_surviving, 100,
+            "second pass evicted {lost} Open circuits — must only evict Closed",
+            lost = 100_usize.saturating_sub(open_surviving),
+        );
+    }
+
     #[tokio::test]
     async fn reopens_after_failed_probe() {
         let cb = InMemoryCircuitBreaker::new();

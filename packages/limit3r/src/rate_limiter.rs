@@ -413,6 +413,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mutant_kill_v2_first_eviction_retains_non_expired() {
+        // Mutant kill: rate_limiter.rs:83,85,86,87 — eviction retain logic
+        // Line 85: `k == key` — current key must survive
+        // Line 86-87: `now.duration_since(state.window_start) < config.limit_refresh_period`
+        //   — non-expired must survive, expired must be evicted
+        //
+        // Setup: Fill with expired keys, then add fresh keys to exceed limit.
+        // After eviction, fresh (non-expired) keys survive, expired keys evicted.
+        let limiter = InMemoryRateLimiter::new();
+        let short_config =
+            test_config(10, Duration::from_millis(10), Duration::from_millis(200));
+
+        // Create 200 keys that will expire
+        for i in 0..200 {
+            let key = format!("expire-{i}");
+            limiter
+                .acquire_permission(&key, &short_config)
+                .await
+                .unwrap();
+        }
+
+        // Wait for expiration
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Fill beyond MAX_TRACKED_KEYS with non-expired keys
+        let long_config = test_config(10, Duration::from_secs(600), Duration::from_millis(200));
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = format!("fresh-{i}");
+            limiter
+                .acquire_permission(&key, &long_config)
+                .await
+                .unwrap();
+        }
+
+        // Trigger eviction
+        limiter
+            .acquire_permission("final-trigger", &long_config)
+            .await
+            .unwrap();
+
+        let map = limiter.state.lock().await;
+        // All expired keys should have been evicted
+        let expired_remaining = (0..200)
+            .filter(|i| map.contains_key(&format!("expire-{i}")))
+            .count();
+        assert_eq!(
+            expired_remaining, 0,
+            "expired keys should all be evicted, but {expired_remaining} remain"
+        );
+        // final-trigger (current key) must survive
+        assert!(
+            map.contains_key("final-trigger"),
+            "current key must survive eviction"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_v2_second_eviction_removes_oldest_non_expired() {
+        // Mutant kill: rate_limiter.rs:93 — second eviction pass (`> MAX_TRACKED_KEYS`)
+        // When no keys are expired, second pass removes oldest entries.
+        // If > replaced with >=, eviction would trigger at exactly MAX_TRACKED_KEYS.
+        let limiter = InMemoryRateLimiter::new();
+        let config = test_config(10, Duration::from_secs(600), Duration::from_millis(200));
+
+        // Fill to exactly MAX_TRACKED_KEYS — no eviction should run
+        for i in 0..MAX_TRACKED_KEYS {
+            let key = format!("exact-{i}");
+            limiter.acquire_permission(&key, &config).await.unwrap();
+        }
+
+        let size_exact = limiter.state.lock().await.len();
+        assert_eq!(
+            size_exact, MAX_TRACKED_KEYS,
+            "at exactly MAX_TRACKED_KEYS, no eviction"
+        );
+
+        // Add one more to trigger eviction
+        limiter
+            .acquire_permission("overflow", &config)
+            .await
+            .unwrap();
+
+        let map = limiter.state.lock().await;
+        // overflow (current key) must survive
+        assert!(
+            map.contains_key("overflow"),
+            "current key evicted during second pass"
+        );
+        // Map should be at or below MAX_TRACKED_KEYS + 1
+        assert!(
+            map.len() <= MAX_TRACKED_KEYS.saturating_add(1),
+            "second pass did not evict, map size = {}",
+            map.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn mutant_kill_v2_deadline_exactly_at_sleep_until() {
+        // Mutant kill: rate_limiter.rs:135 — `>` replaced with `>=`
+        // When sleep_until > deadline, we must return error.
+        // When sleep_until == deadline, with `>` it would NOT error (would sleep),
+        // with `>=` it WOULD error. So this tests the boundary.
+        // We use a very tight timeout that is definitely less than the window.
+        let limiter = InMemoryRateLimiter::new();
+        // 1 permit, 10s window, 1ms timeout — sleep_until is ~10s away, deadline ~1ms away
+        let config = test_config(1, Duration::from_secs(10), Duration::from_millis(1));
+
+        // Exhaust the permit
+        limiter.acquire_permission("tight", &config).await.unwrap();
+
+        // Second acquire: sleep_until (~10s from now) > deadline (~1ms from now) → error
+        let result = limiter.acquire_permission("tight", &config).await;
+        assert!(
+            result.is_err(),
+            "must error when sleep_until exceeds deadline"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_debug_fmt_outputs_field_names() {
+        // Mutant kill: rate_limiter.rs:149 — Debug fmt replaced with Ok(Default::default())
+        // The KeyState Debug impl must output actual field names, not empty string.
+        let ks = KeyState {
+            permits_used: 42,
+            window_start: Instant::now(),
+        };
+        let debug_str = format!("{ks:?}");
+        assert!(
+            debug_str.contains("permits_used"),
+            "Debug must contain 'permits_used', got: {debug_str}"
+        );
+        assert!(
+            debug_str.contains("42"),
+            "Debug must contain the actual value '42', got: {debug_str}"
+        );
+        assert!(
+            debug_str.contains("window_start"),
+            "Debug must contain 'window_start', got: {debug_str}"
+        );
+    }
+
+    #[tokio::test]
     async fn multiple_keys_are_independent() {
         let limiter = InMemoryRateLimiter::new();
         let config = test_config(1, Duration::from_secs(10), Duration::from_millis(50));

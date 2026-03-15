@@ -897,6 +897,143 @@ mod tests {
         );
     }
 
+    /// Start a TCP listener that responds with a fixed HTTP response to any request.
+    fn spawn_http_mock(
+        status: u16,
+        status_text: &str,
+        body: &str,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        let response = format!(
+            "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|_| std::process::abort());
+        let addr = listener.local_addr().unwrap_or_else(|_| std::process::abort());
+        let handle = std::thread::spawn(move || {
+            for _ in 0..5 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    let _ = std::io::Write::flush(&mut stream);
+                }
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test
+    async fn mutant_kill_v2_http_call_success_true_returns_success() {
+        // Mutant kill: client.rs:304 — `== with !=` on `response.success == Some(true)`
+        // A real HTTP response with {"success": true} must produce TaskResult{success: true}.
+        // With the `!=` mutation, success:true would fall through to the error path.
+        let body = r#"{"success":true,"output":"hello"}"#;
+        let (addr, _handle) = spawn_http_mock(200, "OK", body);
+
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap();
+
+        let result = http_call(
+            client.http_client(),
+            &format!("http://{addr}/run"),
+            &TaskPayload {
+                task: String::from("name: test\ncommand: echo"),
+                input: String::from("hi"),
+                working_directory: None,
+                environment: None,
+                limiter_key: None,
+                timeout_ms: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.success,
+            "response with success:true must produce TaskResult.success=true; \
+             if this fails, the == check was mutated to !="
+        );
+        assert_eq!(result.output, "hello", "output must be preserved from response");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test
+    async fn mutant_kill_v2_http_call_success_false_returns_failure() {
+        // Mutant kill: client.rs:304 — `== with !=` (inverse direction)
+        // A response with {"success": false} must produce TaskResult{success: false}.
+        let body = r#"{"success":false,"output":"boom"}"#;
+        let (addr, _handle) = spawn_http_mock(200, "OK", body);
+
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap();
+
+        let result = http_call(
+            client.http_client(),
+            &format!("http://{addr}/run"),
+            &TaskPayload {
+                task: String::from("name: test\ncommand: echo"),
+                input: String::from("hi"),
+                working_directory: None,
+                environment: None,
+                limiter_key: None,
+                timeout_ms: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.success,
+            "response with success:false must produce TaskResult.success=false"
+        );
+        assert_eq!(result.output, "boom", "error output must be preserved");
+    }
+
+    #[test]
+    fn mutant_kill_v2_truncate_str_boundary_len_equals_max() {
+        // Mutant kill: client.rs:365 — `> with >=` on `s.len() > max_len`
+        // (or equivalently, `<= with <` on `s.len() <= max_len`)
+        // A string of exactly max_len bytes must NOT be truncated.
+        // With `>=` (or `<`), len==max triggers truncation incorrectly.
+        let s = "exact"; // 5 bytes
+        let result = truncate_str(s, 5);
+        assert_eq!(
+            result, "exact",
+            "string of exactly max_len must pass through unchanged"
+        );
+        // Verify length precisely — catches off-by-one truncation.
+        assert_eq!(
+            result.len(), s.len(),
+            "output length must equal input length when len == max_len"
+        );
+
+        // One byte shorter than max: must also pass through.
+        let s2 = "abcd"; // 4 bytes
+        assert_eq!(
+            truncate_str(s2, 5), "abcd",
+            "string shorter than max_len must pass through"
+        );
+
+        // One byte longer than max: must truncate.
+        let s3 = "abcdef"; // 6 bytes
+        assert_eq!(
+            truncate_str(s3, 5), "abcde",
+            "string longer than max_len must be truncated"
+        );
+    }
+
     #[test]
     #[allow(clippy::unwrap_used)] // reason: test assertions
     fn regression_task_payload_omits_none_optional_fields() {

@@ -223,6 +223,31 @@ mod option_tests {
             "negative value must be rejected (guard not always false)"
         );
     }
+
+    #[test]
+    fn mutant_kill_v2_option_each_guard_condition_independent() {
+        // Mutant kill: duration_serde.rs:298 — replace || with && in
+        //   `secs < 0.0 || secs.is_nan() || secs.is_infinite()`
+        // With &&, a value that is ONLY negative passes because the other
+        // two conditions are false. With ||, any single true rejects.
+        // Call the raw option::deserialize to bypass serde_json limitations.
+
+        // -2.0 is negative, finite, not NaN → only first condition true
+        let neg: Result<Option<Duration>, _> =
+            super::option::deserialize(&mut serde_json::Deserializer::from_str("-2.0"));
+        assert!(
+            neg.is_err(),
+            "option: negative-only must be rejected (|| not &&)"
+        );
+
+        // Positive must still work
+        let pos: Result<Option<Duration>, _> =
+            super::option::deserialize(&mut serde_json::Deserializer::from_str("2.0"));
+        assert_eq!(
+            pos.expect("positive must succeed"),
+            Some(Duration::from_secs_f64(2.0)),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +285,27 @@ mod non_option_guard_tests {
             Duration::from_secs_f64(3.14),
             "non-option: valid positive must be accepted"
         );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test
+    fn mutant_kill_v2_non_option_each_guard_condition_independent() {
+        // Mutant kill: duration_serde.rs:28 — replace || with && in
+        //   `secs < 0.0 || secs.is_nan() || secs.is_infinite()`
+        // With &&, ALL three must be true to reject. A value that is ONLY
+        // negative (not NaN, not infinite) would slip through &&.
+        // We test each condition in isolation via the raw deserialize fn.
+
+        // 1) Negative only: -1.0 is negative, finite, not NaN
+        let neg: Result<Duration, _> =
+            super::deserialize(&mut serde_json::Deserializer::from_str("-1.0"));
+        assert!(neg.is_err(), "negative-only must be rejected (|| not &&)");
+
+        // 2) Positive value must still be accepted
+        let pos: Result<Duration, _> =
+            super::deserialize(&mut serde_json::Deserializer::from_str("1.0"));
+        assert!(pos.is_ok(), "positive value must be accepted");
+        assert_eq!(pos.unwrap(), Duration::from_secs_f64(1.0));
     }
 }
 
