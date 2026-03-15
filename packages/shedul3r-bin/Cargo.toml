@@ -1,0 +1,31 @@
+[package]
+name = "shedul3r"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Task execution server with rate limiting, circuit breaking, and retry. Install via cargo binstall."
+license = "MIT"
+repository = "https://github.com/websmasher/pipelin3r"
+readme = "README.md"
+keywords = ["task-queue", "scheduling", "rate-limiting", "server"]
+categories = ["command-line-utilities", "asynchronous"]
+
+# This is a stub crate for cargo-binstall.
+# The real binary is built from apps/shedul3r/ and distributed via GitHub Releases.
+# `cargo binstall shedul3r` downloads the prebuilt binary.
+# `cargo install shedul3r` will fail — use binstall instead.
+
+[[bin]]
+name = "shedul3r"
+path = "src/main.rs"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/shedul3r-v{ version }/shedul3r-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "shedul3r"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/shedul3r-v{ version }/shedul3r-linux-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/shedul3r-v{ version }/shedul3r-darwin-arm64.tar.gz"

@@ -6,7 +6,7 @@ members = [
     "packages/shedul3r-rs-sdk",
     "packages/pipelin3r",
 ]
-exclude = ["apps/shedul3r"]
+exclude = ["apps/shedul3r", "packages/shedul3r-bin"]
 resolver = "2"
 
 [workspace.lints.rust]
