@@ -1,0 +1,20 @@
+[workspace]
+# Generate changelog from conventional commits
+changelog_config = "cliff.toml"
+# Create GitHub releases
+git_release_enable = true
+# Update all packages together
+release_always = false
+
+# Only release packages in the root workspace (not shedul3r app)
+[[package]]
+name = "limit3r"
+publish = true
+
+[[package]]
+name = "shedul3r-rs-sdk"
+publish = true
+
+[[package]]
+name = "pipelin3r"
+publish = true

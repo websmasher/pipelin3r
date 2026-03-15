@@ -32,7 +32,7 @@ pub use auth::Auth;
 pub use bundle::Bundle;
 pub use command::{CommandBuilder, CommandResult};
 pub use executor::Executor;
-pub use model::{Model, Provider};
+pub use model::{Model, ModelConfig, Provider};
 pub use pool::run_pool;
 pub use template::TemplateFiller;
 pub use transform::{TransformBuilder, TransformResult};

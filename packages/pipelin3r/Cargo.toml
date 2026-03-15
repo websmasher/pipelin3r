@@ -15,6 +15,7 @@ shedul3r-rs-sdk = { path = "../shedul3r-rs-sdk" }
 anyhow = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+toml = "0.8"
 tracing = "0.1"
 
 [dev-dependencies]

@@ -4,6 +4,7 @@
 use anyhow as _;
 use serde_json as _;
 use shedul3r_rs_sdk as _;
+use toml as _;
 use tracing as _;
 
 use std::path::Path;

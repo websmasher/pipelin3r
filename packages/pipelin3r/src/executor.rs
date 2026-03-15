@@ -7,13 +7,14 @@ use shedul3r_rs_sdk::{Client, ClientConfig};
 
 use crate::agent::AgentBuilder;
 use crate::auth::Auth;
-use crate::model::Provider;
+use crate::model::{ModelConfig, Provider};
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
 pub struct Executor {
     client: Client,
     default_auth: Option<Auth>,
     default_provider: Option<Provider>,
+    model_config: ModelConfig,
     dry_run: Option<Mutex<DryRunConfig>>,
     remote: bool,
 }
@@ -35,6 +36,7 @@ impl Executor {
             client,
             default_auth: None,
             default_provider: None,
+            model_config: ModelConfig::default_config(),
             dry_run: None,
             remote: false,
         })
@@ -59,6 +61,16 @@ impl Executor {
     #[must_use]
     pub fn with_default_provider(mut self, provider: Provider) -> Self {
         self.default_provider = Some(provider);
+        self
+    }
+
+    /// Override the model ID configuration.
+    ///
+    /// By default, the executor uses the embedded `models.toml` configuration.
+    /// Use this to load custom model ID mappings from a different TOML source.
+    #[must_use]
+    pub fn with_model_config(mut self, config: ModelConfig) -> Self {
+        self.model_config = config;
         self
     }
 
@@ -99,6 +111,11 @@ impl Executor {
     /// Get the default provider, if set.
     pub(crate) const fn default_provider(&self) -> Option<&Provider> {
         self.default_provider.as_ref()
+    }
+
+    /// Get the model configuration.
+    pub(crate) const fn model_config(&self) -> &ModelConfig {
+        &self.model_config
     }
 
     /// Get the dry-run config mutex, if dry-run is enabled.

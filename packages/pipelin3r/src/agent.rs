@@ -191,7 +191,7 @@ impl<'a> AgentBuilder<'a> {
         }
     }
 
-    /// Resolve the model string for task YAML, using the provider from the executor.
+    /// Resolve the model string for task YAML, using the provider and config from the executor.
     fn resolve_model_string(&self) -> Option<String> {
         self.model.as_ref().map(|m| {
             let provider = self
@@ -199,7 +199,7 @@ impl<'a> AgentBuilder<'a> {
                 .default_provider()
                 .cloned()
                 .unwrap_or_default();
-            m.id(&provider)
+            self.executor.model_config().resolve(m, &provider)
         })
     }
 
@@ -371,7 +371,7 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
         self
     }
 
-    /// Resolve the model string for task YAML, using the provider from the executor.
+    /// Resolve the model string for task YAML, using the provider and config from the executor.
     fn resolve_model_string(&self) -> Option<String> {
         self.model.as_ref().map(|m| {
             let provider = self
@@ -379,7 +379,7 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
                 .default_provider()
                 .cloned()
                 .unwrap_or_default();
-            m.id(&provider)
+            self.executor.model_config().resolve(m, &provider)
         })
     }
 

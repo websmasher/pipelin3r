@@ -1,0 +1,19 @@
+[anthropic]
+opus_4_6 = "claude-opus-4-6"
+sonnet_4_6 = "claude-sonnet-4-6"
+haiku_4_5 = "claude-haiku-4-5"
+
+[openrouter]
+opus_4_6 = "anthropic/claude-opus-4-6"
+sonnet_4_6 = "anthropic/claude-sonnet-4-6"
+haiku_4_5 = "anthropic/claude-haiku-4-5"
+
+[bedrock]
+opus_4_6 = "anthropic.claude-opus-4-6-v1"
+sonnet_4_6 = "anthropic.claude-sonnet-4-6-v1"
+haiku_4_5 = "anthropic.claude-haiku-4-5-v1"
+
+[vertex]
+opus_4_6 = "claude-opus-4-6@20250514"
+sonnet_4_6 = "claude-sonnet-4-6@20250514"
+haiku_4_5 = "claude-haiku-4-5@20251001"
