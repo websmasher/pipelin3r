@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "openviking": {
+      "command": "node",
+      "args": ["/Users/tartakovsky/Projects/websmasher/openviking-infra/dist/index.js"],
+      "env": {
+        "OPENVIKING_URL": "http://37.27.80.156",
+        "OPENVIKING_API_KEY": "683a4e9740bb889675f93c4c9217ee96bd730ed1accad803e1646101c889294b",
+        "OPENVIKING_AGENT_ID": "claude-code"
+      }
+    }
+  }
+}

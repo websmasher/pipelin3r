@@ -9,9 +9,10 @@ repository = "https://github.com/3jane/pipelin3r"
 keywords = ["pipeline", "llm", "orchestration", "workflow"]
 categories = ["development-tools", "asynchronous"]
 readme = "README.md"
+exclude = [".plans/", ".worklogs/"]
 
 [dependencies]
-shedul3r-rs-sdk = { path = "../shedul3r-rs-sdk" }
+shedul3r-rs-sdk = { version = "0.1.0", path = "../shedul3r-rs-sdk" }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"

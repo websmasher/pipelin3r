@@ -9,6 +9,7 @@ repository = "https://github.com/3jane/pipelin3r"
 keywords = ["rate-limiting", "circuit-breaker", "bulkhead", "resilience"]
 categories = ["concurrency", "network-programming"]
 readme = "README.md"
+exclude = [".plans/", ".worklogs/"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
