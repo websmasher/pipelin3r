@@ -10,6 +10,7 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tower_http::catch_panic::CatchPanicLayer;
 
+use api::bundle_router;
 use api::cli::Cli;
 use api::state::build_app_state;
 use api::task_router;
@@ -66,6 +67,7 @@ async fn serve(port_override: Option<u16>) {
     let state = build_app_state();
 
     let app = task_router()
+        .merge(bundle_router())
         .route("/health", get(health))
         .with_state(Arc::clone(&state))
         // Panic-to-HTTP conversion — prevents raw panic messages leaking to clients

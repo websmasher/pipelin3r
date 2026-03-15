@@ -7,11 +7,13 @@ use shedul3r_rs_sdk::{Client, ClientConfig};
 
 use crate::agent::AgentBuilder;
 use crate::auth::Auth;
+use crate::model::Provider;
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
 pub struct Executor {
     client: Client,
     default_auth: Option<Auth>,
+    default_provider: Option<Provider>,
     dry_run: Option<Mutex<DryRunConfig>>,
 }
 
@@ -31,6 +33,7 @@ impl Executor {
         Ok(Self {
             client,
             default_auth: None,
+            default_provider: None,
             dry_run: None,
         })
     }
@@ -47,6 +50,13 @@ impl Executor {
     #[must_use]
     pub fn with_default_auth(mut self, auth: Auth) -> Self {
         self.default_auth = Some(auth);
+        self
+    }
+
+    /// Set the default LLM provider for all agent invocations.
+    #[must_use]
+    pub fn with_default_provider(mut self, provider: Provider) -> Self {
+        self.default_provider = Some(provider);
         self
     }
 
@@ -74,6 +84,11 @@ impl Executor {
     /// Get the default auth, if set.
     pub(crate) const fn default_auth(&self) -> Option<&Auth> {
         self.default_auth.as_ref()
+    }
+
+    /// Get the default provider, if set.
+    pub(crate) const fn default_provider(&self) -> Option<&Provider> {
+        self.default_provider.as_ref()
     }
 
     /// Get the dry-run config mutex, if dry-run is enabled.

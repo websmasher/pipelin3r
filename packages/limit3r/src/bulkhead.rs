@@ -128,3 +128,55 @@ impl Bulkhead for InMemoryBulkhead {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // reason: test assertions
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn test_config(max_concurrent: u32, max_wait: Duration) -> BulkheadConfig {
+        BulkheadConfig {
+            max_concurrent,
+            max_wait_duration: max_wait,
+        }
+    }
+
+    #[tokio::test]
+    async fn acquires_permit_when_under_max_concurrent() {
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(2, Duration::from_millis(100));
+
+        let result = bh.acquire("key-a", &config).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn releases_permit_correctly() {
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(1, Duration::from_millis(50));
+
+        // Acquire the single permit
+        bh.acquire("key-a", &config).await.unwrap();
+
+        // Release it
+        bh.release("key-a");
+
+        // Should be able to acquire again
+        let result = bh.acquire("key-a", &config).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn times_out_when_all_permits_taken() {
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(1, Duration::from_millis(50));
+
+        // Acquire the single permit (don't release)
+        bh.acquire("key-a", &config).await.unwrap();
+
+        // Second acquire should time out
+        let result = bh.acquire("key-a", &config).await;
+        assert!(result.is_err());
+    }
+}

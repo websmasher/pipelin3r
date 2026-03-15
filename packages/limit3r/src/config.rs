@@ -54,3 +54,77 @@ pub struct BulkheadConfig {
     #[serde(with = "duration_serde")]
     pub max_wait_duration: Duration,
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // reason: test assertions
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_config_serde_round_trip() {
+        let config = RateLimitConfig {
+            limit_for_period: 100,
+            limit_refresh_period: Duration::from_secs(60),
+            timeout_duration: Duration::from_millis(500),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: RateLimitConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.limit_for_period, config.limit_for_period);
+        assert_eq!(
+            deserialized.limit_refresh_period,
+            config.limit_refresh_period
+        );
+        assert_eq!(deserialized.timeout_duration, config.timeout_duration);
+    }
+
+    #[test]
+    fn circuit_breaker_config_serde_round_trip() {
+        let config = CircuitBreakerConfig {
+            failure_rate_threshold: 50.0,
+            sliding_window_size: 10,
+            wait_duration_in_open_state: Duration::from_secs(30),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: CircuitBreakerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.failure_rate_threshold,
+            config.failure_rate_threshold
+        );
+        assert_eq!(
+            deserialized.sliding_window_size,
+            config.sliding_window_size
+        );
+        assert_eq!(
+            deserialized.wait_duration_in_open_state,
+            config.wait_duration_in_open_state
+        );
+    }
+
+    #[test]
+    fn retry_config_serde_round_trip() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(10),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: RetryConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.max_attempts, config.max_attempts);
+        assert_eq!(deserialized.wait_duration, config.wait_duration);
+        assert_eq!(deserialized.backoff_multiplier, config.backoff_multiplier);
+        assert_eq!(deserialized.max_delay, config.max_delay);
+    }
+
+    #[test]
+    fn bulkhead_config_serde_round_trip() {
+        let config = BulkheadConfig {
+            max_concurrent: 5,
+            max_wait_duration: Duration::from_millis(200),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: BulkheadConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.max_concurrent, config.max_concurrent);
+        assert_eq!(deserialized.max_wait_duration, config.max_wait_duration);
+    }
+}

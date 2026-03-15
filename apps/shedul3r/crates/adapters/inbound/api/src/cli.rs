@@ -13,7 +13,7 @@ use crate::state::{AppState, build_app_state};
 
 /// Schedulr CLI — task execution engine.
 #[derive(Debug, Parser)]
-#[command(name = "schedulr", about = "Task execution engine")]
+#[command(name = "shedul3r", about = "Task execution engine")]
 pub struct Cli {
     /// Port for daemon mode (default: 7943).
     #[arg(long)]

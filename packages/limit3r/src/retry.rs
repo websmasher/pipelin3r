@@ -102,3 +102,115 @@ impl RetryExecutor for TokioRetryExecutor {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // reason: test assertions
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn test_config(max_attempts: u32) -> RetryConfig {
+        RetryConfig {
+            max_attempts,
+            wait_duration: Duration::from_millis(10),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn succeeds_on_first_attempt_no_retry() {
+        let executor = TokioRetryExecutor::new();
+        let config = test_config(3);
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = Arc::clone(&call_count);
+
+        let result: Result<&str, Limit3rError> = executor
+            .execute_with_retry(
+                move || {
+                    let cc = Arc::clone(&cc);
+                    async move {
+                        let _prev = cc.fetch_add(1, Ordering::SeqCst);
+                        Ok("ok")
+                    }
+                },
+                &config,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn succeeds_after_retry() {
+        let executor = TokioRetryExecutor::new();
+        let config = test_config(3);
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = Arc::clone(&call_count);
+
+        let result: Result<&str, Limit3rError> = executor
+            .execute_with_retry(
+                move || {
+                    let cc = Arc::clone(&cc);
+                    async move {
+                        let attempt = cc.fetch_add(1, Ordering::SeqCst);
+                        if attempt < 1 {
+                            Err(Limit3rError::RetryExhausted { attempts: 0 })
+                        } else {
+                            Ok("ok")
+                        }
+                    }
+                },
+                &config,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn exhausts_all_attempts_and_returns_retry_exhausted() {
+        let executor = TokioRetryExecutor::new();
+        let config = test_config(2);
+
+        let result: Result<&str, Limit3rError> = executor
+            .execute_with_retry(
+                || async { Err(Limit3rError::RetryExhausted { attempts: 0 }) },
+                &config,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, Limit3rError::RetryExhausted { attempts: 2 }),
+            "expected RetryExhausted with attempts=2, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn compute_delay_with_exponential_backoff() {
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(5),
+        };
+
+        // attempt 0: 100ms * 2^0 = 100ms
+        let d0 = compute_delay(&config, 0);
+        assert_eq!(d0, Duration::from_millis(100));
+
+        // attempt 1: 100ms * 2^1 = 200ms
+        let d1 = compute_delay(&config, 1);
+        assert_eq!(d1, Duration::from_millis(200));
+
+        // attempt 2: 100ms * 2^2 = 400ms
+        let d2 = compute_delay(&config, 2);
+        assert_eq!(d2, Duration::from_millis(400));
+    }
+}

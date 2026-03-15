@@ -13,6 +13,8 @@ use axum::response::{IntoResponse, Response};
 pub enum AppError {
     /// Client sent invalid input — 400
     BadRequest(String),
+    /// Resource not found — 404
+    NotFound(String),
     /// Server-side failure — 500
     Internal(String),
     /// Upstream service failure — 502
@@ -23,6 +25,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, "bad_request", msg.clone()),
+            Self::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg.clone()),
             Self::Internal(msg) => {
                 tracing::error!(error = %msg, "internal error");
                 (

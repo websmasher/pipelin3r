@@ -10,11 +10,15 @@ publish.workspace = true
 workspace = true
 
 [[bin]]
-name = "schedulr"
+name = "shedul3r"
 path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
 clap.workspace = true
 domain-types = { path = "../../../domain/types" }
 commands = { path = "../../../app/commands" }
@@ -25,3 +29,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tower-http.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tower.workspace = true

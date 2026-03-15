@@ -122,3 +122,69 @@ impl std::fmt::Debug for KeyState {
             .finish()
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // reason: test assertions
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn test_config(limit: u32, refresh: Duration, timeout: Duration) -> RateLimitConfig {
+        RateLimitConfig {
+            limit_for_period: limit,
+            limit_refresh_period: refresh,
+            timeout_duration: timeout,
+        }
+    }
+
+    #[tokio::test]
+    async fn acquire_permit_succeeds_when_under_limit() {
+        let limiter = InMemoryRateLimiter::new();
+        let config = test_config(5, Duration::from_secs(1), Duration::from_millis(100));
+
+        let result = limiter.acquire_permission("key-a", &config).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn acquire_permit_fails_when_limit_exhausted_and_timeout_expires() {
+        let limiter = InMemoryRateLimiter::new();
+        let config = test_config(1, Duration::from_secs(10), Duration::from_millis(50));
+
+        // Consume the single permit
+        limiter.acquire_permission("key-a", &config).await.unwrap();
+
+        // Second acquire should fail because the window won't reset before timeout
+        let result = limiter.acquire_permission("key-a", &config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn window_resets_after_refresh_period() {
+        let limiter = InMemoryRateLimiter::new();
+        let config = test_config(1, Duration::from_millis(50), Duration::from_millis(200));
+
+        // Consume the permit
+        limiter.acquire_permission("key-a", &config).await.unwrap();
+
+        // Wait for the window to reset
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        // Should succeed again after window refresh
+        let result = limiter.acquire_permission("key-a", &config).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn multiple_keys_are_independent() {
+        let limiter = InMemoryRateLimiter::new();
+        let config = test_config(1, Duration::from_secs(10), Duration::from_millis(50));
+
+        // Exhaust key-a
+        limiter.acquire_permission("key-a", &config).await.unwrap();
+
+        // key-b should still succeed
+        let result = limiter.acquire_permission("key-b", &config).await;
+        assert!(result.is_ok());
+    }
+}

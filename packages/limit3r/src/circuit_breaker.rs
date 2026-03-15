@@ -191,3 +191,130 @@ impl InMemoryCircuitBreaker {
         drop(map);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // reason: test assertions
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn test_config(threshold: f64, window: u32, wait: Duration) -> CircuitBreakerConfig {
+        CircuitBreakerConfig {
+            failure_rate_threshold: threshold,
+            sliding_window_size: window,
+            wait_duration_in_open_state: wait,
+        }
+    }
+
+    #[test]
+    fn starts_closed_and_permits_requests() {
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 5, Duration::from_secs(5));
+
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn opens_after_failure_threshold_exceeded() {
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_secs(5));
+
+        // First call to initialize state
+        cb.check_permitted("key-a", &config).unwrap();
+
+        // Record 3 failures out of 4 window slots (75% > 50% threshold)
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+
+        // Next check should trip the circuit
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_requests_when_open() {
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_secs(60));
+
+        // Initialize and force open
+        cb.check_permitted("key-a", &config).unwrap();
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        let _ = cb.check_permitted("key-a", &config); // triggers open
+
+        // Subsequent calls should be rejected
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn transitions_to_half_open_after_wait_duration() {
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_millis(50));
+
+        // Initialize and force open
+        cb.check_permitted("key-a", &config).unwrap();
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        let _ = cb.check_permitted("key-a", &config); // triggers open
+
+        // Wait for the open duration to pass
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        // Should now be allowed (half-open probe)
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn closes_again_after_successful_probe() {
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_millis(50));
+
+        // Initialize and force open
+        cb.check_permitted("key-a", &config).unwrap();
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        let _ = cb.check_permitted("key-a", &config); // triggers open
+
+        // Wait for half-open
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        cb.check_permitted("key-a", &config).unwrap(); // half-open probe
+
+        // Record success to close the circuit
+        cb.record_success("key-a");
+
+        // Should now be fully closed
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn reopens_after_failed_probe() {
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 4, Duration::from_millis(50));
+
+        // Initialize and force open
+        cb.check_permitted("key-a", &config).unwrap();
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        cb.record_failure("key-a");
+        let _ = cb.check_permitted("key-a", &config); // triggers open
+
+        // Wait for half-open
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        cb.check_permitted("key-a", &config).unwrap(); // half-open probe
+
+        // Record failure to reopen
+        cb.record_failure("key-a");
+
+        // Should be open again (no wait elapsed)
+        let result = cb.check_permitted("key-a", &config);
+        assert!(result.is_err());
+    }
+}

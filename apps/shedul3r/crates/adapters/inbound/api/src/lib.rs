@@ -13,4 +13,5 @@ use tracing_subscriber as _;
 
 pub use error::AppError;
 pub use extractors::ValidatedJson;
+pub use handlers::bundle_router;
 pub use handlers::task_router;
