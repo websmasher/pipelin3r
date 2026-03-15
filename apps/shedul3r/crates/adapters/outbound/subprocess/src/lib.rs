@@ -371,6 +371,31 @@ mod tests {
 
     #[allow(clippy::unwrap_used)] // reason: test code, panics are acceptable
     #[tokio::test]
+    async fn regression_subprocess_preserves_actual_exit_code() {
+        // Regression: exit code was hardcoded to 1 regardless of the actual
+        // process exit code. A command exiting with code 42 must report 42.
+        let runner = TokioSubprocessRunner::new();
+        let cmd = SubprocessCommand {
+            command: vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "exit 42".to_owned(),
+            ],
+            working_directory: None,
+            environment: None,
+            timeout: None,
+            stdin_data: None,
+        };
+
+        let result = runner.run(cmd).await.unwrap();
+        assert_eq!(
+            result.exit_code, 42,
+            "exit code must be 42, not hardcoded to 1"
+        );
+    }
+
+    #[allow(clippy::unwrap_used)] // reason: test code, panics are acceptable
+    #[tokio::test]
     async fn test_child_killed_on_cancel() {
         let marker = "sleep 54321";
         let runner = TokioSubprocessRunner::new();

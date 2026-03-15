@@ -386,6 +386,50 @@ mod tests {
     }
 
     #[test]
+    fn regression_config_validation_rejects_invalid_values() {
+        // Regression: config validation was missing entirely. These specific
+        // cases must all fail validate() — if any passes, the validation
+        // was removed or broken.
+
+        // RateLimitConfig with limit_for_period=0
+        let rl = RateLimitConfig {
+            limit_for_period: 0,
+            limit_refresh_period: Duration::from_secs(1),
+            timeout_duration: Duration::from_secs(1),
+        };
+        assert!(rl.validate().is_err(), "limit_for_period=0 must fail");
+
+        // CircuitBreakerConfig with sliding_window_size=0
+        let cb = CircuitBreakerConfig {
+            failure_rate_threshold: 50.0,
+            sliding_window_size: 0,
+            wait_duration_in_open_state: Duration::from_secs(5),
+        };
+        assert!(cb.validate().is_err(), "sliding_window_size=0 must fail");
+
+        // RetryConfig with max_attempts=0
+        let retry = RetryConfig {
+            max_attempts: 0,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(retry.validate().is_err(), "max_attempts=0 must fail");
+
+        // RetryConfig with backoff_multiplier=INFINITY
+        let retry_inf = RetryConfig {
+            max_attempts: 3,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: f64::INFINITY,
+            max_delay: Duration::from_secs(10),
+        };
+        assert!(
+            retry_inf.validate().is_err(),
+            "backoff_multiplier=INFINITY must fail"
+        );
+    }
+
+    #[test]
     fn bulkhead_config_serde_round_trip() {
         let config = BulkheadConfig {
             max_concurrent: 5,

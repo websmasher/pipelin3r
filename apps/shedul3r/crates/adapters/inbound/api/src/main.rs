@@ -73,13 +73,33 @@ async fn serve(port_override: Option<u16>) {
 
     let state = build_app_state();
 
+    // Unauthenticated routes: health checks must pass without an API key
+    // so that load balancers and readiness probes work regardless of auth config.
+    let public_routes = axum::Router::new().route("/health", get(health));
+
+    // Authenticated routes: task and bundle endpoints that carry business data.
     // Per-route body limits: task endpoints get 50MB, bundle upload gets 100MB.
-    let mut app = task_router()
+    let mut protected_routes = task_router()
         .layer(DefaultBodyLimit::max(TASK_BODY_LIMIT))
         .merge(
             bundle_router().layer(DefaultBodyLimit::max(BUNDLE_BODY_LIMIT)),
-        )
-        .route("/health", get(health))
+        );
+
+    // Optional API key authentication: if SHEDUL3R_API_KEY is set, require
+    // Bearer token on protected routes only.
+    #[allow(clippy::disallowed_methods)] // Startup: env var reading is confined to main()
+    if let Ok(key) = std::env::var("SHEDUL3R_API_KEY") {
+        tracing::info!("API key authentication enabled");
+        protected_routes = protected_routes.layer(middleware::from_fn(move |req, next| {
+            let k = key.clone();
+            api::auth::check_api_key(req, next, k)
+        }));
+    } else {
+        tracing::warn!("SHEDUL3R_API_KEY not set — running without authentication");
+    }
+
+    let app = public_routes
+        .merge(protected_routes)
         .with_state(Arc::clone(&state))
         // Panic-to-HTTP conversion — prevents raw panic messages leaking to clients
         .layer(CatchPanicLayer::custom(|_| {
@@ -89,19 +109,6 @@ async fn serve(port_override: Option<u16>) {
             });
             (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
         }));
-
-    // Optional API key authentication: if SHEDUL3R_API_KEY is set, require
-    // Bearer token on all requests.
-    #[allow(clippy::disallowed_methods)] // Startup: env var reading is confined to main()
-    if let Ok(key) = std::env::var("SHEDUL3R_API_KEY") {
-        tracing::info!("API key authentication enabled");
-        app = app.layer(middleware::from_fn(move |req, next| {
-            let k = key.clone();
-            api::auth::check_api_key(req, next, k)
-        }));
-    } else {
-        tracing::warn!("SHEDUL3R_API_KEY not set — running without authentication");
-    }
 
     #[allow(clippy::expect_used)] // Startup: binding failure is unrecoverable
     let listener = TcpListener::bind(&addr)

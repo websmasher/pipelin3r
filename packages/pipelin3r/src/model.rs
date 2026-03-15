@@ -216,6 +216,35 @@ mod tests {
     }
 
     #[test]
+    fn regression_tool_enum_returns_strings_not_indices() {
+        // Regression: Tool variants returned numeric indices or debug strings
+        // instead of the expected CLI tool name strings.
+        assert_eq!(
+            Tool::Read.as_str(),
+            "Read",
+            "Tool::Read must return \"Read\", not a number or debug repr"
+        );
+        assert_eq!(
+            Tool::Custom(String::from("Mcp")).as_str(),
+            "Mcp",
+            "Tool::Custom must return the inner string as-is"
+        );
+        // Verify all known variants produce non-empty proper strings.
+        let known = [
+            Tool::Read, Tool::Write, Tool::Grep,
+            Tool::Glob, Tool::WebSearch, Tool::WebFetch,
+        ];
+        for tool in &known {
+            let s = tool.as_str();
+            assert!(!s.is_empty(), "tool string must not be empty");
+            assert!(
+                s.chars().next().is_some_and(char::is_uppercase),
+                "tool string must start with uppercase: {s}"
+            );
+        }
+    }
+
+    #[test]
     fn tool_display() {
         assert_eq!(format!("{}", Tool::Read), "Read", "Display for Read");
         assert_eq!(

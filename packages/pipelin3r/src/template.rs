@@ -269,4 +269,71 @@ mod tests {
             "should return file content"
         );
     }
+
+    // ── Regression tests ────────────────────────────────────────────
+
+    #[test]
+    fn regression_phase1_cross_injection() {
+        // Regression: set("{{A}}", "has {{B}}").set("{{B}}", "injected") would
+        // double-replace, producing "has injected" instead of "has {{B}}".
+        let result = TemplateFiller::new()
+            .set("{{A}}", "has {{B}}")
+            .set("{{B}}", "injected")
+            .fill("{{A}}");
+
+        assert_eq!(
+            result, "has {{B}}",
+            "simple replacement value containing another placeholder must NOT be replaced (single-pass)"
+        );
+    }
+
+    #[test]
+    fn regression_content_into_content_no_injection() {
+        // Regression: set_content("{{A}}", "has {{B}}").set_content("{{B}}", "x")
+        // would replace {{B}} inside A's value, producing "has x".
+        let result = TemplateFiller::new()
+            .set_content("{{A}}", "has {{B}}")
+            .set_content("{{B}}", "x")
+            .fill("{{A}}");
+
+        assert_eq!(
+            result, "has {{B}}",
+            "content replacement value containing another placeholder must NOT be replaced (single-pass)"
+        );
+    }
+
+    #[test]
+    fn regression_template_filler_owned_self_chaining() {
+        // Regression: TemplateFiller methods required &mut self instead of owned
+        // self, making single-expression chaining impossible without let mut.
+        let result = TemplateFiller::new()
+            .set("{{A}}", "alpha")
+            .set("{{B}}", "beta")
+            .fill("{{A}} and {{B}}");
+
+        assert_eq!(
+            result, "alpha and beta",
+            "chained set() calls in one expression must compile and produce correct output"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions with tempdir
+    fn regression_template_from_file_loads_content() {
+        // Regression: Template::from_file was missing, forcing manual file reading.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my_template.md");
+        std::fs::write(&path, "Hello {{WORLD}}, count={{N}}").unwrap();
+
+        let content = TemplateFiller::from_file(&path).unwrap();
+        let result = TemplateFiller::new()
+            .set("{{WORLD}}", "Earth")
+            .set("{{N}}", "42")
+            .fill(&content);
+
+        assert_eq!(
+            result, "Hello Earth, count=42",
+            "from_file content must be usable with fill()"
+        );
+    }
 }

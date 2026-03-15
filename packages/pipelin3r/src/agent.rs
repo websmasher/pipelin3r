@@ -855,6 +855,22 @@ mod tests {
         let _ = std::fs::remove_dir_all("/tmp/pipelin3r-batch-test");
     }
 
+    #[test]
+    fn regression_require_success_returns_agent_failed_not_other() {
+        // Regression: AgentResult{success:false}.require_success() returned
+        // PipelineError::Other instead of PipelineError::AgentFailed.
+        let result = AgentResult {
+            success: false,
+            output: String::from("model timeout"),
+        };
+        let err = result.require_success();
+        assert!(err.is_err(), "failed agent must return Err");
+        assert!(
+            matches!(&err, Err(PipelineError::AgentFailed { message }) if message == "model timeout"),
+            "must be PipelineError::AgentFailed with preserved message, got: {err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn batch_without_mapper_fails() {
         let executor = Executor::with_defaults().unwrap_or_else(|_| {

@@ -230,4 +230,31 @@ mod tests {
             "normal nested path should be valid"
         );
     }
+
+    // ── Regression tests ────────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    fn regression_bundle_path_traversal_rejected_normal_succeeds() {
+        // Regression: Bundle::new().add_file("../../etc/passwd", ...) was not
+        // rejected, allowing path traversal attacks.
+        let evil = Bundle::new().add_file("../../etc/passwd", b"evil");
+        assert!(
+            evil.is_err(),
+            "parent traversal path must be rejected"
+        );
+        let msg = evil.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid bundle path"),
+            "error must mention invalid path: {msg}"
+        );
+
+        // Normal paths must still succeed.
+        let ok = Bundle::new().add_file("normal/path.txt", b"ok");
+        assert!(
+            ok.is_ok(),
+            "normal relative path must succeed"
+        );
+        assert_eq!(ok.unwrap().file_count(), 1, "file should be added");
+    }
 }

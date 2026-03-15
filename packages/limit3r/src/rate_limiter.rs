@@ -206,6 +206,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regression_rate_limiter_eviction_does_not_evict_current_key() {
+        // Regression: eviction could evict the current key being acquired,
+        // causing it to lose its state and reset. After the fix, the current
+        // key is always inserted/preserved before eviction runs.
+        let limiter = InMemoryRateLimiter::new();
+        let config = test_config(2, Duration::from_secs(60), Duration::from_millis(100));
+
+        // Fill to MAX_TRACKED_KEYS with other keys
+        for i in 0..MAX_TRACKED_KEYS.saturating_add(1) {
+            let key = format!("filler-{i}");
+            limiter.acquire_permission(&key, &config).await.unwrap();
+        }
+
+        // Now acquire on an existing key — it should NOT be evicted/reset.
+        // First, create the key and use 1 of 2 permits.
+        let target_config = test_config(2, Duration::from_secs(60), Duration::from_millis(100));
+        limiter
+            .acquire_permission("survivor-key", &target_config)
+            .await
+            .unwrap();
+
+        // Use second permit
+        limiter
+            .acquire_permission("survivor-key", &target_config)
+            .await
+            .unwrap();
+
+        // Both permits consumed — third acquire should fail (timeout quickly).
+        // If the key was evicted and re-created, it would have fresh permits and succeed.
+        let fail_config = test_config(2, Duration::from_secs(60), Duration::from_millis(50));
+        let result = limiter
+            .acquire_permission("survivor-key", &fail_config)
+            .await;
+        assert!(
+            result.is_err(),
+            "key was evicted and re-created with fresh permits — eviction must not affect current key"
+        );
+    }
+
+    #[tokio::test]
     async fn multiple_keys_are_independent() {
         let limiter = InMemoryRateLimiter::new();
         let config = test_config(1, Duration::from_secs(10), Duration::from_millis(50));

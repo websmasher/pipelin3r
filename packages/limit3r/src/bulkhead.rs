@@ -184,6 +184,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regression_bulkhead_eviction_does_not_evict_current_key() {
+        // Regression: eviction could evict the key being acquired, causing
+        // the semaphore to be re-created with fresh permits. After the fix,
+        // the current key is always inserted before eviction runs.
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Fill to MAX_TRACKED_KEYS with idle keys (all permits available).
+        for i in 0..MAX_TRACKED_KEYS.saturating_add(1) {
+            let key = format!("filler-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        // Acquire on target key (consumes its single permit)
+        bh.acquire("target-key", &config).await.unwrap();
+
+        // Now trigger eviction by acquiring on another key
+        bh.acquire("trigger-eviction", &config).await.unwrap();
+
+        // The target key's permit should still be consumed.
+        // If it was evicted and re-created, a second acquire would succeed.
+        let result = bh
+            .acquire("target-key", &test_config(1, Duration::from_millis(50)))
+            .await;
+        assert!(
+            result.is_err(),
+            "target key was evicted and re-created with fresh permits"
+        );
+    }
+
+    #[tokio::test]
     async fn times_out_when_all_permits_taken() {
         let bh = InMemoryBulkhead::new();
         let config = test_config(1, Duration::from_millis(50));

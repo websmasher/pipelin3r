@@ -524,6 +524,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regression_upload_rejects_oversized_field() {
+        // Regression: there was no body size limit. A field exceeding 10MB
+        // must return 400.
+        let app = test_app();
+
+        // Create a field just over 10MB
+        let content = vec![0u8; 10_000_001];
+        let mp = multipart_body("big.bin", &content);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/bundles")
+            .header("content-type", &mp.content_type)
+            .body(Body::from(mp.body))
+            .unwrap_or_default();
+
+        let resp = app.oneshot(req).await.unwrap_or_default();
+        assert_eq!(
+            resp.status(),
+            400,
+            "upload of >10MB field must return 400"
+        );
+    }
+
+    #[tokio::test]
     async fn delete_nonexistent_returns_404() {
         let app = test_app();
 

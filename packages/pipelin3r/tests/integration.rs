@@ -11,7 +11,7 @@ use tracing as _;
 use std::path::Path;
 
 use pipelin3r::{
-    AgentTask, Executor, Model, TemplateFiller, TransformBuilder, TransformResult,
+    AgentTask, Auth, Bundle, Executor, Model, TemplateFiller, TransformBuilder, TransformResult,
 };
 
 /// Verify that a single agent dry-run creates the expected capture files.
@@ -184,6 +184,115 @@ async fn agent_dry_run_without_prompt_fails() {
     let result = executor.agent("test-no-prompt").execute().await;
 
     assert!(result.is_err(), "should fail when no prompt is set");
+}
+
+// ── Regression tests ────────────────────────────────────────────
+
+/// Verify that dry-run capture includes auth environment keys in meta.json.
+#[tokio::test]
+#[allow(clippy::unwrap_used)] // reason: integration test assertions
+async fn regression_dry_run_captures_auth_in_meta() {
+    // Regression: dry-run mode did not capture the "environment" key in
+    // meta.json, losing auth context.
+    let dir = tempfile::tempdir().unwrap();
+    let capture_dir = dir.path().to_path_buf();
+
+    let auth = Auth::ApiKey(String::from("sk-test-key"));
+    let executor = Executor::with_defaults()
+        .unwrap()
+        .with_default_auth(auth)
+        .with_dry_run(capture_dir.clone());
+
+    let _result = executor
+        .agent("auth-capture-test")
+        .prompt("test prompt")
+        .execute()
+        .await
+        .unwrap();
+
+    let meta_path = capture_dir
+        .join("auth-capture-test")
+        .join("0")
+        .join("meta.json");
+    let meta_content = std::fs::read_to_string(&meta_path).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(&meta_content).unwrap();
+
+    assert!(
+        meta.get("environment").is_some(),
+        "meta.json must contain 'environment' key, got: {meta_content}"
+    );
+    let env_arr = meta.get("environment").and_then(serde_json::Value::as_array);
+    assert!(
+        env_arr.is_some(),
+        "environment must be an array"
+    );
+    assert!(
+        !env_arr.unwrap().is_empty(),
+        "environment array must not be empty when auth is provided"
+    );
+}
+
+/// Verify that dry-run capture includes bundle file paths in meta.json.
+#[tokio::test]
+#[allow(clippy::unwrap_used)] // reason: integration test assertions
+async fn regression_dry_run_captures_bundle_in_meta() {
+    // Regression: dry-run mode did not capture the "bundleFiles" key in
+    // meta.json, losing bundle context.
+    let dir = tempfile::tempdir().unwrap();
+    let capture_dir = dir.path().to_path_buf();
+
+    let bundle = Bundle::new()
+        .add_text_file("input.txt", "hello world")
+        .unwrap()
+        .add_text_file("config.json", "{}")
+        .unwrap();
+
+    let executor = Executor::with_defaults()
+        .unwrap()
+        .with_dry_run(capture_dir.clone());
+
+    let _result = executor
+        .agent("bundle-capture-test")
+        .prompt("test prompt")
+        .bundle(bundle)
+        .execute()
+        .await
+        .unwrap();
+
+    let meta_path = capture_dir
+        .join("bundle-capture-test")
+        .join("0")
+        .join("meta.json");
+    let meta_content = std::fs::read_to_string(&meta_path).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(&meta_content).unwrap();
+
+    assert!(
+        meta.get("bundleFiles").is_some(),
+        "meta.json must contain 'bundleFiles' key, got: {meta_content}"
+    );
+    let files_arr = meta.get("bundleFiles").and_then(serde_json::Value::as_array);
+    assert!(
+        files_arr.is_some(),
+        "bundleFiles must be an array"
+    );
+    let files = files_arr.unwrap();
+    assert_eq!(
+        files.len(),
+        2,
+        "bundleFiles must list both bundle files"
+    );
+    let file_names: Vec<&str> = files
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        file_names.contains(&"input.txt"),
+        "bundleFiles must contain input.txt"
+    );
+    assert!(
+        file_names.contains(&"config.json"),
+        "bundleFiles must contain config.json"
+    );
 }
 
 /// Assert that a path exists and is a file.

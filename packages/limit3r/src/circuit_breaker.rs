@@ -426,6 +426,91 @@ mod tests {
         assert!(result.is_ok(), "current key was evicted or lost");
     }
 
+    #[test]
+    fn regression_circuit_breaker_does_not_trip_on_partial_window() {
+        // Regression: A single failure in a window of size 100 should NOT open
+        // the circuit. The old code computed 1/1 = 100% and tripped immediately
+        // without waiting for enough data.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 100, Duration::from_secs(5));
+
+        // Initialize the key
+        cb.check_permitted("key-a", &config).unwrap();
+
+        // Record exactly 1 failure
+        cb.record_failure("key-a");
+
+        // Must still be permitted — 1 result is far below min_calls = max(2, 100/2) = 50
+        let result = cb.check_permitted("key-a", &config);
+        assert!(
+            result.is_ok(),
+            "circuit tripped on 1 failure in a window of 100 — premature trip on partial window"
+        );
+    }
+
+    #[test]
+    fn regression_circuit_breaker_trips_at_exact_threshold_with_window_2() {
+        // Regression: rate exactly at threshold should trip (>= not >).
+        // With threshold=50.0 and window=2, record 1 success + 1 failure (50% rate).
+        // min_calls = max(2, 2/2) = 2, so 2 results meets the threshold.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 2, Duration::from_secs(5));
+
+        // Initialize the key
+        cb.check_permitted("key-a", &config).unwrap();
+
+        // Record 1 success and 1 failure = exactly 50%
+        cb.record_success("key-a");
+        cb.record_failure("key-a");
+
+        // 1/2 = 50% >= 50% threshold — must trip
+        let result = cb.check_permitted("key-a", &config);
+        assert!(
+            result.is_err(),
+            "circuit did not trip at exactly 50% failure rate with threshold 50% and window 2"
+        );
+    }
+
+    #[test]
+    fn regression_circuit_breaker_eviction_preserves_failure_history() {
+        // Regression: eviction used to drop ALL closed keys, losing failure
+        // history for keys that were accumulating failures below threshold.
+        // After the fix, only truly idle keys (empty history) are evicted first,
+        // then those with fewest results.
+        let cb = InMemoryCircuitBreaker::new();
+        let config = test_config(50.0, 10, Duration::from_secs(5));
+
+        // Fill beyond MAX_TRACKED_KEYS with idle keys (no history).
+        for i in 0..MAX_TRACKED_KEYS.saturating_add(1) {
+            let key = format!("filler-{i}");
+            cb.check_permitted(&key, &config).unwrap();
+        }
+
+        // Add a key with failure history below threshold
+        cb.check_permitted("important-key", &config).unwrap();
+        cb.record_failure("important-key");
+        cb.record_failure("important-key");
+        cb.record_failure("important-key");
+
+        // Trigger eviction by inserting another key
+        cb.check_permitted("trigger-eviction", &config).unwrap();
+
+        // The important key's failure history must be preserved.
+        // Record more failures to reach the trip threshold.
+        // With window=10, min_calls = max(2, 10/2) = 5.
+        // We already have 3 failures, add 2 more to reach 5 results all failures = 100%.
+        cb.record_failure("important-key");
+        cb.record_failure("important-key");
+
+        // Now check — if history was preserved, we have 5 failures = 100% >= 50%, should trip.
+        // If history was lost, the key would look fresh and not trip.
+        let result = cb.check_permitted("important-key", &config);
+        assert!(
+            result.is_err(),
+            "failure history was lost during eviction — circuit should have tripped"
+        );
+    }
+
     #[tokio::test]
     async fn reopens_after_failed_probe() {
         let cb = InMemoryCircuitBreaker::new();

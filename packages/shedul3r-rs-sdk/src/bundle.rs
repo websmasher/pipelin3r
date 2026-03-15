@@ -7,6 +7,17 @@ use serde::Deserialize;
 
 use crate::error::SdkError;
 
+/// URL-encode each segment of a path individually, preserving `/` separators.
+///
+/// Encoding the entire path would turn `/` into `%2F`, breaking server-side
+/// wildcard route matching that expects literal slashes.
+fn encode_path_segments(path: &str) -> String {
+    path.split('/')
+        .map(|segment| urlencoding::encode(segment))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Opaque handle returned after uploading a bundle.
 #[derive(Debug, Clone)]
 pub struct BundleHandle {
@@ -84,8 +95,8 @@ impl super::Client {
         let url = format!(
             "{}/api/bundles/{}/files/{}",
             self.base_url(),
-            urlencoding::encode(bundle_id),
-            urlencoding::encode(path),
+            encode_path_segments(bundle_id),
+            encode_path_segments(path),
         );
 
         let resp: reqwest::Response = self.http_client().get(&url).send().await?;
@@ -113,7 +124,7 @@ impl super::Client {
         let url = format!(
             "{}/api/bundles/{}",
             self.base_url(),
-            urlencoding::encode(bundle_id),
+            encode_path_segments(bundle_id),
         );
 
         let resp: reqwest::Response = self.http_client().delete(&url).send().await?;
@@ -182,6 +193,52 @@ mod tests {
         assert!(
             result.is_err(),
             "should fail when server is unreachable"
+        );
+    }
+
+    #[test]
+    fn regression_download_file_url_encodes_path_with_spaces() {
+        // Regression: bundle path was not URL-encoded, causing requests with
+        // spaces in the path to fail or hit wrong endpoints.
+        // We verify per-segment encoding: spaces become %20 but / stays literal.
+        let path_with_spaces = "my folder/output file.txt";
+        let encoded = super::encode_path_segments(path_with_spaces);
+        assert!(
+            encoded.contains("%20"),
+            "spaces must be percent-encoded in URL: {encoded}"
+        );
+        assert!(
+            !encoded.contains(' '),
+            "encoded URL must not contain literal spaces: {encoded}"
+        );
+        // Slashes must be preserved as literal separators.
+        assert!(
+            encoded.contains("my%20folder/output%20file.txt"),
+            "URL must encode segments but preserve slashes: {encoded}"
+        );
+    }
+
+    #[test]
+    fn regression_download_file_preserves_slashes_in_nested_paths() {
+        // Regression: urlencoding::encode(path) encoded the entire path,
+        // turning `/` into `%2F`. The server's wildcard route expects
+        // literal slashes. Per-segment encoding fixes this.
+        let nested_path = "sub/dir/file.txt";
+        let base_url = "http://localhost:7943";
+        let bundle_id = "test-bundle-123";
+        let url = format!(
+            "{}/api/bundles/{}/files/{}",
+            base_url,
+            super::encode_path_segments(bundle_id),
+            super::encode_path_segments(nested_path),
+        );
+        assert!(
+            url.contains("sub/dir/file.txt"),
+            "nested path must have literal slashes, not %%2F: {url}"
+        );
+        assert!(
+            !url.contains("%2F"),
+            "URL must not contain %%2F for path separators: {url}"
         );
     }
 

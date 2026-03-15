@@ -84,6 +84,18 @@ mod tests {
     }
 
     #[test]
+    fn regression_duration_serde_rejects_negative_without_panic() {
+        // Regression: deserializing a negative duration used to panic via
+        // Duration::from_secs_f64(-1.0). After the fix, it returns an error.
+        let json = r#"{"dur": -1.0}"#;
+        let result = serde_json::from_str::<Wrapper>(json);
+        assert!(
+            result.is_err(),
+            "negative duration must return error, not panic"
+        );
+    }
+
+    #[test]
     fn rejects_infinity_duration() {
         // serde_json rejects Infinity natively for f64
         let json = r#"{"dur": "Infinity"}"#;
