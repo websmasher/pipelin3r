@@ -32,6 +32,7 @@ jobs:
       # unpublished workspace deps (actual verification happens in the build job).
       - run: cargo publish --dry-run -p limit3r
       - run: cargo publish --dry-run -p shedul3r-rs-sdk
+      - run: cargo publish --dry-run -p shedul3r
       - name: Publish dry-run pipelin3r (allow failure if workspace deps unpublished)
         run: cargo publish --dry-run -p pipelin3r || echo "::warning::pipelin3r dry-run failed — likely because shedul3r-rs-sdk is not yet on crates.io"
 

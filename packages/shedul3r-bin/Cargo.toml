@@ -15,6 +15,9 @@ categories = ["command-line-utilities", "asynchronous"]
 # `cargo binstall shedul3r` downloads the prebuilt binary.
 # `cargo install shedul3r` will fail — use binstall instead.
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "shedul3r"
 path = "src/main.rs"
