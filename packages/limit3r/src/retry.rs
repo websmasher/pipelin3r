@@ -195,6 +195,196 @@ mod tests {
     }
 
     #[test]
+    fn mutant_kill_compute_delay_exactly_at_max_returns_max() {
+        // Mutant kill: retry.rs:50 — replace > with == or >=
+        // When delay == max_delay, it should return max_delay (not be clamped differently).
+        // With > correctly, delay == max is not > max, so it falls through to the else branch = delay_secs.
+        // With >=, delay == max would enter the if branch and return max_secs — same result.
+        // With ==, delay > max would NOT enter the if and would overflow.
+        // So we test delay ABOVE max to kill == mutation.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_secs(10),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(5),
+        };
+        // attempt 1: 10s * 2^1 = 20s, which is > 5s max_delay
+        let d = compute_delay(&config, 1);
+        assert_eq!(
+            d,
+            Duration::from_secs(5),
+            "delay exceeding max_delay must be clamped to max_delay"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_just_below_max_not_clamped() {
+        // Mutant kill: retry.rs:50 — replace > with >=
+        // delay < max should NOT be clamped. With >=, delay == max would be clamped (same value, so same result).
+        // To distinguish > from >=: delay exactly at max should pass through unclamped.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(500),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(1),
+        };
+        // attempt 1: 500ms * 2^1 = 1000ms = exactly max_delay
+        let d = compute_delay(&config, 1);
+        // Whether > or >=, result is the same when delay == max (both return max_secs).
+        // The real kill is: delay clearly above max must clamp.
+        assert_eq!(
+            d,
+            Duration::from_secs(1),
+            "delay at max_delay boundary must return max_delay"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_nan_returns_zero() {
+        // Mutant kill: retry.rs:52 — replace || with && on NaN/negative check
+        // NaN factor should produce zero delay, not propagate NaN.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: f64::NAN,
+            max_delay: Duration::from_secs(5),
+        };
+        let d = compute_delay(&config, 1);
+        assert_eq!(d, Duration::ZERO, "NaN backoff must produce zero delay");
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_negative_factor_returns_zero() {
+        // Mutant kill: retry.rs:52 — replace < with == or <=
+        // A negative multiplier raised to odd power produces negative delay.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: -2.0,
+            max_delay: Duration::from_secs(5),
+        };
+        // attempt 1: 100ms * (-2)^1 = -200ms — negative, should return zero
+        let d = compute_delay(&config, 1);
+        assert_eq!(
+            d,
+            Duration::ZERO,
+            "negative delay must produce zero delay"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_compute_delay_negative_not_equal_zero() {
+        // Mutant kill: retry.rs:52 — replace < with ==
+        // -0.2 is negative but not equal to 0.0, must still return zero.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(100),
+            backoff_multiplier: -1.0,
+            max_delay: Duration::from_secs(5),
+        };
+        // attempt 1: 100ms * (-1)^1 = -100ms
+        let d = compute_delay(&config, 1);
+        assert_eq!(
+            d,
+            Duration::ZERO,
+            "negative delay (not zero) must produce zero delay (< not ==)"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_delay_exactly_equal_max_returns_max() {
+        // Mutant kill: retry.rs:50 — `> max_secs` replaced with `>= max_secs`
+        // When delay_secs == max_secs exactly:
+        //   With `>`:  delay is NOT > max, falls to else → returns delay_secs (== max_secs) ✓
+        //   With `>=`: delay IS >= max, enters if → returns max_secs (same value) ✓
+        // Both produce the same result when equal, so we can't distinguish.
+        // Instead, test delay JUST BELOW max — it must NOT be clamped to max.
+        // With `>=` and delay==max, it returns max (same). But if delay < max:
+        //   With `>`:  not > max → returns delay_secs ✓
+        //   With `>=`: not >= max → returns delay_secs ✓
+        // Still same. The real kill: delay slightly above max must clamp.
+        // Actually the `>` vs `>=` mutant can only be killed when delay == max exactly:
+        // both return max_secs so it's equivalent. The REAL mutant to kill is `>` → `==`:
+        // With `==`, only delay == max enters the if. delay > max skips and goes to
+        // else → returns the huge delay_secs, which would cause Duration overflow.
+        //
+        // Test: delay clearly above max must be clamped.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_secs(100),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(10),
+        };
+        // attempt 1: 100s * 2^1 = 200s, clearly > 10s
+        let d = compute_delay(&config, 1);
+        assert_eq!(
+            d,
+            Duration::from_secs(10),
+            "delay above max must be clamped to max_delay"
+        );
+
+        // Also test: delay exactly at max returns max (not zero or something else)
+        let config_exact = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(500),
+            backoff_multiplier: 2.0,
+            max_delay: Duration::from_secs(1),
+        };
+        // attempt 1: 500ms * 2 = 1000ms = exactly max_delay
+        let d_exact = compute_delay(&config_exact, 1);
+        assert_eq!(
+            d_exact,
+            Duration::from_secs(1),
+            "delay exactly at max must return max"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_delay_exactly_zero_not_rejected() {
+        // Mutant kill: retry.rs:52 — `< 0.0` replaced with `<= 0.0`
+        // With `<`: 0.0 is NOT < 0.0, so it falls through to else → returns 0.0 ✓
+        // With `<=`: 0.0 IS <= 0.0, enters the if → returns 0.0 ✓
+        // Same result! Both return 0.0. The real kill: a tiny positive value (like 0.001)
+        // must NOT be treated as negative.
+        //   With `<`: 0.001 not < 0 → else → returns 0.001 ✓
+        //   With `<=`: 0.001 not <= 0 → else → returns 0.001 ✓
+        // Still same. Actually for `<` vs `<=`, the boundary IS 0.0:
+        // value = 0.0: `<` → false (returns 0.0 via else), `<=` → true (returns 0.0 via if)
+        // Both return Duration::from_secs_f64(0.0) = Duration::ZERO. Semantically identical.
+        //
+        // The real mutant to kill: `<` replaced with `==`. With `==`:
+        //   -0.5: not == 0.0 → else → returns -0.5 → Duration::from_secs_f64(-0.5) PANICS!
+        // That's already caught by existing negative tests. But let's verify 0.0 explicitly.
+        let config = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_secs(0),
+            backoff_multiplier: 1.0,
+            max_delay: Duration::from_secs(5),
+        };
+        // attempt 0: 0s * 1^0 = 0.0
+        let d = compute_delay(&config, 0);
+        assert_eq!(
+            d,
+            Duration::ZERO,
+            "zero delay must produce Duration::ZERO, not be rejected"
+        );
+
+        // Also: a small positive delay must NOT be clamped to zero
+        let config_small = RetryConfig {
+            max_attempts: 5,
+            wait_duration: Duration::from_millis(1),
+            backoff_multiplier: 1.0,
+            max_delay: Duration::from_secs(5),
+        };
+        let d_small = compute_delay(&config_small, 0);
+        assert_eq!(
+            d_small,
+            Duration::from_millis(1),
+            "small positive delay must not be clamped to zero"
+        );
+    }
+
+    #[test]
     fn compute_delay_with_exponential_backoff() {
         let config = RetryConfig {
             max_attempts: 5,

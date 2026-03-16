@@ -2,9 +2,7 @@ name: Release shedul3r binary
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "apps/shedul3r/**"
+    branches: [production]
 
 jobs:
   check-version:
@@ -16,6 +14,8 @@ jobs:
       new_release: ${{ steps.check_tag.outputs.new_release }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Extract version from Cargo.toml
         id: extract
@@ -44,6 +44,13 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: shedul3r-linux-x86_64.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: shedul3r-linux-arm64.tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: shedul3r-darwin-x86_64.tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: shedul3r-darwin-arm64.tar.gz
@@ -57,6 +64,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/shedul3r
+
+      - name: Install cross-compilation tools
+        if: matrix.cross == true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Build release binary
         working-directory: apps/shedul3r
@@ -97,4 +111,6 @@ jobs:
             --title "shedul3r ${{ needs.check-version.outputs.version }}" \
             --generate-notes \
             artifacts/shedul3r-linux-x86_64.tar.gz/shedul3r-linux-x86_64.tar.gz \
+            artifacts/shedul3r-linux-arm64.tar.gz/shedul3r-linux-arm64.tar.gz \
+            artifacts/shedul3r-darwin-x86_64.tar.gz/shedul3r-darwin-x86_64.tar.gz \
             artifacts/shedul3r-darwin-arm64.tar.gz/shedul3r-darwin-arm64.tar.gz

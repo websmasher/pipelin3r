@@ -18,3 +18,7 @@ publish = true
 [[package]]
 name = "pipelin3r"
 publish = true
+
+[[package]]
+name = "shedul3r"
+publish = true

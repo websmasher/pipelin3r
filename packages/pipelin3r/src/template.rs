@@ -1,15 +1,20 @@
-//! Two-phase template filler with injection protection.
+//! Single-pass template filler with injection protection.
 //!
-//! Simple replacements (names, counts) are applied first, then content
-//! replacements (large blobs) are applied in a single pass to prevent
-//! template injection if their content contains `{{PLACEHOLDER}}` strings.
+//! All replacements (simple and content) are applied in a single pass so that
+//! no replacement value is ever scanned for placeholders, preventing template
+//! injection regardless of value contents.
 
-/// Two-phase template filler.
+use std::path::Path;
+
+use crate::error::PipelineError;
+
+/// Single-pass template filler.
 ///
-/// Use [`set`](Self::set) for short, safe values (applied first) and
+/// Use [`set`](Self::set) for short, safe values (names, counts) and
 /// [`set_content`](Self::set_content) for large blobs that might contain
-/// placeholder-like strings (applied last, in a single pass so they
-/// cannot inject into each other).
+/// placeholder-like strings. Both are applied in a single pass: all
+/// placeholder positions are located first, then replaced simultaneously
+/// so no replacement value can inject into another.
 pub struct TemplateFiller {
     replacements: Vec<(String, String)>,
     content_replacements: Vec<(String, String)>,
@@ -24,18 +29,30 @@ impl TemplateFiller {
         }
     }
 
+    /// Load a template from a file path.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read.
+    pub fn from_file(path: &Path) -> Result<String, PipelineError> {
+        std::fs::read_to_string(path).map_err(|e| {
+            PipelineError::Template(format!(
+                "failed to read template {}: {e}",
+                path.display()
+            ))
+        })
+    }
+
     /// Add a simple replacement (short strings like names, counts).
-    /// These are applied first.
-    pub fn set(&mut self, key: &str, value: &str) -> &mut Self {
+    #[must_use]
+    pub fn set(mut self, key: &str, value: &str) -> Self {
         self.replacements
             .push((String::from(key), String::from(value)));
         self
     }
 
     /// Add a content replacement (large blobs like architecture docs, test cases).
-    /// These are applied in a single pass to prevent template injection if their
-    /// content contains `{{PLACEHOLDER}}` strings.
-    pub fn set_content(&mut self, key: &str, value: &str) -> &mut Self {
+    #[must_use]
+    pub fn set_content(mut self, key: &str, value: &str) -> Self {
         self.content_replacements
             .push((String::from(key), String::from(value)));
         self
@@ -43,25 +60,25 @@ impl TemplateFiller {
 
     /// Apply all replacements and return the filled template.
     ///
-    /// Simple replacements are applied first (sequentially). Content
-    /// replacements are then applied in a single pass: all placeholder
-    /// positions are located first, then replaced from end to start so that
-    /// byte offsets remain valid and no replacement value is scanned by
-    /// subsequent replacements.
+    /// All replacements (simple and content) are applied in a single pass:
+    /// all placeholder positions are located first, then replaced from end
+    /// to start so that byte offsets remain valid and no replacement value
+    /// is scanned by subsequent replacements. This prevents injection even
+    /// if a simple replacement value contains another placeholder string.
     pub fn fill(&self, template: &str) -> String {
-        let mut result = String::from(template);
+        // Combine simple + content replacements into a single list.
+        let all: Vec<(String, String)> = self
+            .replacements
+            .iter()
+            .chain(self.content_replacements.iter())
+            .cloned()
+            .collect();
 
-        // Phase 1: simple replacements (sequential is fine — values are short/safe).
-        for (key, value) in &self.replacements {
-            result = result.replace(key.as_str(), value.as_str());
+        if all.is_empty() {
+            return String::from(template);
         }
 
-        // Phase 2: content replacements — single-pass, reverse-offset.
-        if !self.content_replacements.is_empty() {
-            result = single_pass_replace(&result, &self.content_replacements);
-        }
-
-        result
+        single_pass_replace(template, &all)
     }
 }
 
@@ -145,8 +162,7 @@ mod tests {
 
     #[test]
     fn fills_simple_and_content_replacements() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler
+        let filler = TemplateFiller::new()
             .set("{{PACKAGE}}", "my-parser")
             .set("{{COUNT}}", "5")
             .set_content("{{ARCHITECTURE}}", "The system uses modular design.");
@@ -162,12 +178,12 @@ mod tests {
 
     #[test]
     fn content_applied_last_prevents_injection() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler.set("{{FILENAME}}", "parser.rs");
-        let _ = filler.set_content(
-            "{{TEST_CASES}}",
-            "Test that {{FILENAME}} handles edge cases",
-        );
+        let filler = TemplateFiller::new()
+            .set("{{FILENAME}}", "parser.rs")
+            .set_content(
+                "{{TEST_CASES}}",
+                "Test that {{FILENAME}} handles edge cases",
+            );
 
         let template = "File: {{FILENAME}}\nCases: {{TEST_CASES}}";
         let result = filler.fill(template);
@@ -180,8 +196,7 @@ mod tests {
 
     #[test]
     fn content_into_content_replacement_order() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler
+        let filler = TemplateFiller::new()
             .set_content("{{A}}", "contains {{B}} reference")
             .set_content("{{B}}", "injected");
 
@@ -191,6 +206,21 @@ mod tests {
         assert_eq!(
             result, "First: contains {{B}} reference, Second: injected",
             "content replacements must not inject into each other"
+        );
+    }
+
+    #[test]
+    fn simple_into_simple_no_cross_injection() {
+        let filler = TemplateFiller::new()
+            .set("{{A}}", "contains {{B}} reference")
+            .set("{{B}}", "injected");
+
+        let template = "First: {{A}}, Second: {{B}}";
+        let result = filler.fill(template);
+
+        assert_eq!(
+            result, "First: contains {{B}} reference, Second: injected",
+            "simple replacements must not inject into each other (single-pass)"
         );
     }
 
@@ -207,8 +237,7 @@ mod tests {
 
     #[test]
     fn multiple_occurrences_of_same_content_key() {
-        let mut filler = TemplateFiller::new();
-        let _ = filler.set_content("{{X}}", "replaced");
+        let filler = TemplateFiller::new().set_content("{{X}}", "replaced");
 
         let template = "a {{X}} b {{X}} c";
         let result = filler.fill(template);
@@ -216,6 +245,153 @@ mod tests {
         assert_eq!(
             result, "a replaced b replaced c",
             "all occurrences of the same content key should be replaced"
+        );
+    }
+
+    #[test]
+    fn from_file_nonexistent() {
+        let result = TemplateFiller::from_file(std::path::Path::new("/nonexistent/template.md"));
+        assert!(result.is_err(), "should fail on nonexistent file");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertion with tempdir
+    fn from_file_reads_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("template.txt");
+        std::fs::write(&path, "Hello {{NAME}}").unwrap();
+
+        let content = TemplateFiller::from_file(&path);
+        assert!(content.is_ok(), "should read existing file");
+        let content = content.unwrap_or_default();
+        assert_eq!(
+            content, "Hello {{NAME}}",
+            "should return file content"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_template_overlapping_keys() {
+        // Mutant kill: template.rs:133 — `> with ==` and `> with >=` on overlap check
+        // `if m.start.saturating_add(m.key_len) > prev.start`
+        // Test with overlapping keys: {{A}} and {{AB}} where one is prefix of another.
+        // The shorter key's match overlaps with the longer key's match position.
+        let filler = TemplateFiller::new()
+            .set("{{A}}", "alpha")
+            .set("{{AB}}", "alphabeta");
+
+        // "{{AB}}" contains "{{A}}" as a prefix — both will match starting at the same position.
+        let result = filler.fill("value={{AB}}");
+        // The longer key "{{AB}}" should win because it starts at the same position.
+        // Actually, both "{{A}}" matches at pos 6 and "{{AB}}" matches at pos 6.
+        // After sorting descending and dedup, the one with the lower start (same here)
+        // is kept when they overlap. Since both start at 6, one will be in deduped first
+        // and the other will overlap. The first in sorted-descending order is the one
+        // with the same start but we need to check which order they appear.
+        // The key thing: the result must be deterministic and not corrupt the string.
+        assert!(
+            result == "value=alphabeta" || result == "value=alphaB}}",
+            "overlapping keys must produce a valid result without corruption: {result}"
+        );
+
+        // Non-overlapping case: keys at different positions must both be replaced.
+        let filler2 = TemplateFiller::new()
+            .set("{{X}}", "ex")
+            .set("{{Y}}", "why");
+        let result2 = filler2.fill("{{X}} and {{Y}}");
+        assert_eq!(
+            result2, "ex and why",
+            "non-overlapping keys must both be replaced"
+        );
+
+        // Adjacent keys (not overlapping): {{A}} immediately followed by {{B}}.
+        let filler3 = TemplateFiller::new()
+            .set("{{A}}", "1")
+            .set("{{B}}", "2");
+        let result3 = filler3.fill("{{A}}{{B}}");
+        assert_eq!(
+            result3, "12",
+            "adjacent non-overlapping keys must both be replaced"
+        );
+
+        // Overlap where one key's end touches another's start (boundary case for > vs >=).
+        // "{{A}}" at pos 0 ends at pos 5. "{{B}}" at pos 5 starts at pos 5.
+        // 0 + 5 > 5 is false, so no overlap — both should be replaced.
+        // If mutated to >=, 0 + 5 >= 5 is true, incorrectly skipping {{B}}.
+        let filler4 = TemplateFiller::new()
+            .set("{{A}}", "1")
+            .set("{{B}}", "2");
+        let result4 = filler4.fill("{{A}}{{B}}rest");
+        assert_eq!(
+            result4, "12rest",
+            "keys touching at boundary must both be replaced (> not >=)"
+        );
+    }
+
+    // ── Regression tests ────────────────────────────────────────────
+
+    #[test]
+    fn regression_phase1_cross_injection() {
+        // Regression: set("{{A}}", "has {{B}}").set("{{B}}", "injected") would
+        // double-replace, producing "has injected" instead of "has {{B}}".
+        let result = TemplateFiller::new()
+            .set("{{A}}", "has {{B}}")
+            .set("{{B}}", "injected")
+            .fill("{{A}}");
+
+        assert_eq!(
+            result, "has {{B}}",
+            "simple replacement value containing another placeholder must NOT be replaced (single-pass)"
+        );
+    }
+
+    #[test]
+    fn regression_content_into_content_no_injection() {
+        // Regression: set_content("{{A}}", "has {{B}}").set_content("{{B}}", "x")
+        // would replace {{B}} inside A's value, producing "has x".
+        let result = TemplateFiller::new()
+            .set_content("{{A}}", "has {{B}}")
+            .set_content("{{B}}", "x")
+            .fill("{{A}}");
+
+        assert_eq!(
+            result, "has {{B}}",
+            "content replacement value containing another placeholder must NOT be replaced (single-pass)"
+        );
+    }
+
+    #[test]
+    fn regression_template_filler_owned_self_chaining() {
+        // Regression: TemplateFiller methods required &mut self instead of owned
+        // self, making single-expression chaining impossible without let mut.
+        let result = TemplateFiller::new()
+            .set("{{A}}", "alpha")
+            .set("{{B}}", "beta")
+            .fill("{{A}} and {{B}}");
+
+        assert_eq!(
+            result, "alpha and beta",
+            "chained set() calls in one expression must compile and produce correct output"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions with tempdir
+    fn regression_template_from_file_loads_content() {
+        // Regression: Template::from_file was missing, forcing manual file reading.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my_template.md");
+        std::fs::write(&path, "Hello {{WORLD}}, count={{N}}").unwrap();
+
+        let content = TemplateFiller::from_file(&path).unwrap();
+        let result = TemplateFiller::new()
+            .set("{{WORLD}}", "Earth")
+            .set("{{N}}", "42")
+            .fill(&content);
+
+        assert_eq!(
+            result, "Hello Earth, count=42",
+            "from_file content must be usable with fill()"
         );
     }
 }

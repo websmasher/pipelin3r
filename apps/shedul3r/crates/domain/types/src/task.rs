@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use crate::config::{BulkheadConfig, RateLimitConfig, RetryConfig};
+use crate::config::{BulkheadConfig, CircuitBreakerConfig, RateLimitConfig, RetryConfig};
 use crate::duration_serde;
 
 /// A task definition describing a shell command and its resilience settings.
@@ -32,6 +32,9 @@ pub struct TaskDefinition {
     /// Retry configuration for this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_config: Option<RetryConfig>,
+    /// Circuit breaker configuration for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_breaker_config: Option<CircuitBreakerConfig>,
     /// Bulkhead (concurrency limiting) configuration for this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bulkhead_config: Option<BulkheadConfig>,

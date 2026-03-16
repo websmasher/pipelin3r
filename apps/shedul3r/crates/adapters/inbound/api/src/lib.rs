@@ -1,5 +1,6 @@
 //! Inbound HTTP adapter: Axum server, handlers, CLI transport, and error mapping.
 
+pub mod auth;
 pub mod cli;
 mod error;
 mod extractors;

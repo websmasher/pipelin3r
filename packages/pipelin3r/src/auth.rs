@@ -165,6 +165,42 @@ mod tests {
     }
 
     #[test]
+    fn regression_from_env_no_credentials_returns_err_not_empty_ok() {
+        // Regression: Auth::FromEnv.to_env() returned Ok with empty map when
+        // neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY was set.
+        // Now it must return Err(PipelineError::Auth(...)).
+        //
+        // We cannot remove env vars (unsafe_code is forbid), so we verify the
+        // contract: if the result is Ok, it must contain at least one credential
+        // key. It must NEVER return Ok with an empty map.
+        let result = Auth::FromEnv.to_env();
+        match result {
+            Ok(env) => {
+                // If credentials happen to be set in the test environment, the
+                // map must NOT be empty.
+                assert!(
+                    !env.is_empty(),
+                    "FromEnv Ok result must never be an empty map — that was the bug"
+                );
+                assert!(
+                    env.contains_key("CLAUDE_CODE_OAUTH_TOKEN")
+                        || env.contains_key("ANTHROPIC_API_KEY"),
+                    "Ok result must contain a credential key, not an empty map"
+                );
+            }
+            Err(e) => {
+                // No credentials set — error must mention the missing vars.
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("CLAUDE_CODE_OAUTH_TOKEN")
+                        || msg.contains("ANTHROPIC_API_KEY"),
+                    "error must mention missing env vars: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
     #[allow(clippy::unwrap_used)] // reason: test assertion on known-Some value
     fn merge_env_overlay_takes_precedence() {
         let mut base = BTreeMap::new();

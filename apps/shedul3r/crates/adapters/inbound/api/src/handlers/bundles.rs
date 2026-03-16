@@ -27,7 +27,10 @@ use crate::state::AppState;
 const MAX_FILES_PER_BUNDLE: usize = 100;
 
 /// Maximum size of a single file field in bytes (10 MB).
-const MAX_FIELD_SIZE: usize = 10_000_000;
+const MAX_FIELD_SIZE: u64 = 10_000_000;
+
+/// Maximum total size of all files in a single bundle upload (100 MB).
+const MAX_TOTAL_BUNDLE_SIZE: u64 = 100_000_000;
 
 /// Validate that a bundle path contains only normal components.
 ///
@@ -43,7 +46,7 @@ fn validate_bundle_path(name: &str) -> Result<(), AppError> {
     for component in path.components() {
         match component {
             Component::Normal(_) => {} // OK — plain filename or directory name
-            _ => {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir | Component::ParentDir => {
                 return Err(AppError::BadRequest(format!(
                     "invalid bundle path: {name}"
                 )));
@@ -71,8 +74,9 @@ async fn upload(
 
     let base = temp_dir.path().to_path_buf();
     let mut file_count: usize = 0;
+    let mut total_size: u64 = 0;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(format!("multipart read error: {e}")))?
@@ -103,21 +107,35 @@ async fn upload(
                 .map_err(|e| AppError::Internal(format!("failed to create dirs: {e}")))?;
         }
 
-        let bytes = field
-            .bytes()
+        // Stream the field to disk, checking size limits incrementally.
+        let mut file = tokio::fs::File::create(&file_path)
             .await
-            .map_err(|e| AppError::BadRequest(format!("failed to read field bytes: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("failed to create file: {e}")))?;
+        let mut file_size: u64 = 0;
 
-        if bytes.len() > MAX_FIELD_SIZE {
-            return Err(AppError::BadRequest(format!(
-                "field too large: {} bytes exceeds {MAX_FIELD_SIZE} byte limit",
-                bytes.len()
-            )));
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("failed to read field chunk: {e}")))?
+        {
+            let chunk_len =
+                u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+            file_size = file_size.saturating_add(chunk_len);
+            total_size = total_size.saturating_add(chunk_len);
+            if file_size > MAX_FIELD_SIZE {
+                return Err(AppError::BadRequest(
+                    "file exceeds 10MB limit".to_owned(),
+                ));
+            }
+            if total_size > MAX_TOTAL_BUNDLE_SIZE {
+                return Err(AppError::BadRequest(
+                    "bundle exceeds 100MB total limit".to_owned(),
+                ));
+            }
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(|e| AppError::Internal(format!("failed to write file: {e}")))?;
         }
-
-        tokio::fs::write(&file_path, &bytes)
-            .await
-            .map_err(|e| AppError::Internal(format!("failed to write file: {e}")))?;
     }
 
     let bundle_id = uuid::Uuid::new_v4().to_string();
@@ -168,18 +186,21 @@ async fn download(
 
     let full_path = bundle_base.join(&file_path);
 
-    let bytes = tokio::fs::read(&full_path).await.map_err(|e| {
+    let file = tokio::fs::File::open(&full_path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             AppError::NotFound(format!("file not found: {file_path}"))
         } else {
-            AppError::Internal(format!("failed to read file: {e}"))
+            AppError::Internal(format!("failed to open file: {e}"))
         }
     })?;
+
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = Body::from_stream(stream);
 
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/octet-stream")],
-        Body::from(bytes),
+        body,
     )
         .into_response())
 }
@@ -499,6 +520,31 @@ mod tests {
             download_resp.status(),
             400,
             "download with traversal should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_upload_rejects_oversized_field() {
+        // Regression: there was no body size limit. A field exceeding 10MB
+        // must return 400.
+        let app = test_app();
+
+        // Create a field just over 10MB
+        let content = vec![0u8; 10_000_001];
+        let mp = multipart_body("big.bin", &content);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/bundles")
+            .header("content-type", &mp.content_type)
+            .body(Body::from(mp.body))
+            .unwrap_or_default();
+
+        let resp = app.oneshot(req).await.unwrap_or_default();
+        assert_eq!(
+            resp.status(),
+            400,
+            "upload of >10MB field must return 400"
         );
     }
 

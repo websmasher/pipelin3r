@@ -7,7 +7,10 @@
 
 use std::time::Duration;
 
-use domain_types::{BulkheadConfig, RateLimitConfig, RetryConfig, SchedulrError, TaskDefinition};
+use domain_types::{
+    BulkheadConfig, CircuitBreakerConfig, RateLimitConfig, RetryConfig, SchedulrError,
+    TaskDefinition,
+};
 
 /// Shorthand for parser results returning an optional config.
 type ParseResult<T> = Result<Option<T>, SchedulrError>;
@@ -46,6 +49,7 @@ pub fn parse_task_definition(yaml: &str) -> Result<TaskDefinition, SchedulrError
     let timeout = extract_duration(mapping, "timeout")?;
     let rate_limit_config = parse_rate_limit(mapping)?;
     let retry_config = parse_retry(mapping)?;
+    let circuit_breaker_config = parse_circuit_breaker(mapping)?;
     let bulkhead_config = parse_bulkhead(mapping)?;
 
     Ok(TaskDefinition {
@@ -55,6 +59,7 @@ pub fn parse_task_definition(yaml: &str) -> Result<TaskDefinition, SchedulrError
         timeout,
         rate_limit_config,
         retry_config,
+        circuit_breaker_config,
         bulkhead_config,
     })
 }
@@ -246,6 +251,44 @@ fn parse_retry(mapping: &serde_yaml::Mapping) -> ParseResult<RetryConfig> {
     }))
 }
 
+/// Parse the `circuit-breaker` sub-mapping into [`CircuitBreakerConfig`].
+fn parse_circuit_breaker(mapping: &serde_yaml::Mapping) -> ParseResult<CircuitBreakerConfig> {
+    let cb_value = mapping.get(yaml_key("circuit-breaker"));
+    let Some(cb_mapping) = cb_value.and_then(serde_yaml::Value::as_mapping) else {
+        return Ok(None);
+    };
+
+    let failure_rate_threshold =
+        extract_f64(cb_mapping, "failure-rate-threshold").ok_or_else(|| {
+            SchedulrError::TaskDefinition(
+                "circuit-breaker.failure-rate-threshold is required when circuit-breaker is specified"
+                    .to_owned(),
+            )
+        })?;
+
+    let sliding_window_size =
+        extract_u32(cb_mapping, "sliding-window-size").ok_or_else(|| {
+            SchedulrError::TaskDefinition(
+                "circuit-breaker.sliding-window-size is required when circuit-breaker is specified"
+                    .to_owned(),
+            )
+        })?;
+
+    let wait_duration_in_open_state =
+        extract_duration(cb_mapping, "wait-duration-in-open-state")?.ok_or_else(|| {
+            SchedulrError::TaskDefinition(
+                "circuit-breaker.wait-duration-in-open-state is required when circuit-breaker is specified"
+                    .to_owned(),
+            )
+        })?;
+
+    Ok(Some(CircuitBreakerConfig {
+        failure_rate_threshold,
+        sliding_window_size,
+        wait_duration_in_open_state,
+    }))
+}
+
 /// Parse the `max-concurrent` and `max-wait` fields into [`BulkheadConfig`].
 fn parse_bulkhead(mapping: &serde_yaml::Mapping) -> ParseResult<BulkheadConfig> {
     let Some(max_concurrent) = extract_u32(mapping, "max-concurrent") else {
@@ -331,6 +374,10 @@ retry:
   initial-delay: 1s
   backoff-multiplier: 2.0
   max-delay: 10s
+circuit-breaker:
+  failure-rate-threshold: 50
+  sliding-window-size: 10
+  wait-duration-in-open-state: 30s
 max-concurrent: 3
 max-wait: 5m
 ";
@@ -353,8 +400,96 @@ max-wait: 5m
             "should have retry config"
         );
         assert!(
+            td_ref.and_then(|t| t.circuit_breaker_config.as_ref()).is_some(),
+            "should have circuit breaker config"
+        );
+        assert!(
             td_ref.and_then(|t| t.bulkhead_config.as_ref()).is_some(),
             "should have bulkhead config"
+        );
+    }
+
+    #[test]
+    fn parse_circuit_breaker_config() {
+        let yaml = r"
+name: cb-task
+command: echo hello
+circuit-breaker:
+  failure-rate-threshold: 75
+  sliding-window-size: 20
+  wait-duration-in-open-state: 1m
+";
+        let def = parse_task_definition(yaml);
+        assert!(def.is_ok(), "should parse circuit breaker config: {def:?}");
+        let td = def.ok();
+        let cb = td.as_ref().and_then(|t| t.circuit_breaker_config.as_ref());
+        assert!(cb.is_some(), "should have circuit breaker config");
+        let cb = cb.as_ref();
+        assert_eq!(cb.map(|c| c.failure_rate_threshold), Some(75.0));
+        assert_eq!(cb.map(|c| c.sliding_window_size), Some(20));
+        assert_eq!(
+            cb.map(|c| c.wait_duration_in_open_state),
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn parse_circuit_breaker_missing_threshold_errors() {
+        let yaml = r"
+name: cb-task
+command: echo hello
+circuit-breaker:
+  sliding-window-size: 10
+  wait-duration-in-open-state: 30s
+";
+        let result = parse_task_definition(yaml);
+        assert!(
+            result.is_err(),
+            "missing failure-rate-threshold should error"
+        );
+    }
+
+    #[test]
+    fn parse_circuit_breaker_missing_window_errors() {
+        let yaml = r"
+name: cb-task
+command: echo hello
+circuit-breaker:
+  failure-rate-threshold: 50
+  wait-duration-in-open-state: 30s
+";
+        let result = parse_task_definition(yaml);
+        assert!(
+            result.is_err(),
+            "missing sliding-window-size should error"
+        );
+    }
+
+    #[test]
+    fn parse_circuit_breaker_missing_wait_duration_errors() {
+        let yaml = r"
+name: cb-task
+command: echo hello
+circuit-breaker:
+  failure-rate-threshold: 50
+  sliding-window-size: 10
+";
+        let result = parse_task_definition(yaml);
+        assert!(
+            result.is_err(),
+            "missing wait-duration-in-open-state should error"
+        );
+    }
+
+    #[test]
+    fn task_without_circuit_breaker_has_none() {
+        let yaml = "name: test\ncommand: echo hello\n";
+        let def = parse_task_definition(yaml);
+        assert!(def.is_ok(), "should parse without circuit breaker");
+        let td = def.ok();
+        assert!(
+            td.as_ref().and_then(|t| t.circuit_breaker_config.as_ref()).is_none(),
+            "should not have circuit breaker config when absent"
         );
     }
 }

@@ -33,6 +33,8 @@ type StateMap = BTreeMap<String, BulkheadState>;
 #[derive(Debug)]
 pub struct InMemoryBulkhead {
     state: RwLock<StateMap>,
+    /// Maximum number of keys tracked before idle entries are evicted.
+    max_tracked_keys: usize,
 }
 
 impl Default for InMemoryBulkhead {
@@ -42,10 +44,16 @@ impl Default for InMemoryBulkhead {
 }
 
 impl InMemoryBulkhead {
-    /// Create a new, empty bulkhead.
+    /// Create a new, empty bulkhead with the default key limit (10,000).
     pub const fn new() -> Self {
+        Self::with_max_keys(MAX_TRACKED_KEYS)
+    }
+
+    /// Create a new, empty bulkhead with a custom maximum number of tracked keys.
+    pub const fn with_max_keys(max: usize) -> Self {
         Self {
             state: RwLock::new(BTreeMap::new()),
+            max_tracked_keys: max,
         }
     }
 
@@ -70,6 +78,7 @@ impl InMemoryBulkhead {
         // Slow path: write lock to insert or update
         let permits = usize::try_from(config.max_concurrent).unwrap_or(usize::MAX);
         let mut map = self.state.write();
+
         let needs_insert = !map.contains_key(key);
         if needs_insert {
             let _prev = map.insert(
@@ -81,17 +90,29 @@ impl InMemoryBulkhead {
             );
         }
 
-        let Some(entry) = map.get_mut(key) else {
+        // Update config if it changed.
+        if let Some(entry) = map.get_mut(key) {
+            if entry.max_concurrent != config.max_concurrent {
+                entry.semaphore = Arc::new(Semaphore::new(permits));
+                entry.max_concurrent = config.max_concurrent;
+            }
+        }
+
+        // Evict idle keys (all permits available) when the map exceeds the
+        // size limit, but never evict the current key.
+        if map.len() > self.max_tracked_keys {
+            map.retain(|k, entry| {
+                k == key
+                    || entry.semaphore.available_permits()
+                        < usize::try_from(entry.max_concurrent).unwrap_or(usize::MAX)
+            });
+        }
+
+        let Some(entry) = map.get(key) else {
             // Defensive: we just inserted, this should never happen
             drop(map);
             return Arc::new(Semaphore::new(permits));
         };
-
-        // If config changed, replace the semaphore
-        if entry.max_concurrent != config.max_concurrent {
-            entry.semaphore = Arc::new(Semaphore::new(permits));
-            entry.max_concurrent = config.max_concurrent;
-        }
 
         let result = Arc::clone(&entry.semaphore);
         drop(map);
@@ -101,19 +122,6 @@ impl InMemoryBulkhead {
 
 impl Bulkhead for InMemoryBulkhead {
     async fn acquire(&self, key: &str, config: &BulkheadConfig) -> Result<(), Limit3rError> {
-        // Evict keys with no outstanding permits when the map exceeds the size limit.
-        {
-            let map = self.state.read();
-            if map.len() > MAX_TRACKED_KEYS {
-                drop(map);
-                let mut map = self.state.write();
-                map.retain(|_k, entry| {
-                    entry.semaphore.available_permits()
-                        < usize::try_from(entry.max_concurrent).unwrap_or(usize::MAX)
-                });
-            }
-        }
-
         let semaphore = self.get_or_create_semaphore(key, config);
 
         let result = tokio::time::timeout(config.max_wait_duration, semaphore.acquire()).await;
@@ -184,14 +192,170 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn eviction_does_not_evict_current_key_bulkhead() {
+        // Regression: eviction could evict the key being acquired
+        let bh = InMemoryBulkhead::with_max_keys(5);
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Fill to 5 with idle keys (all permits available)
+        for i in 0..5 {
+            let key = format!("filler-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        // Acquire on target key (consumes its single permit)
+        bh.acquire("target-key", &config).await.unwrap();
+
+        // Now trigger eviction by acquiring on another key
+        bh.acquire("trigger-eviction", &config).await.unwrap();
+
+        // The target key's permit should still be consumed
+        let result = bh
+            .acquire("target-key", &test_config(1, Duration::from_millis(50)))
+            .await;
+        assert!(
+            result.is_err(),
+            "target key was evicted and re-created with fresh permits"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_eviction_at_exactly_max_keys_bulkhead() {
+        // Mutant kill: `>` vs `>=` — at exactly max, no eviction should run
+        let bh = InMemoryBulkhead::with_max_keys(5);
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Fill to exactly 5 (no eviction should happen yet)
+        for i in 0..5 {
+            let key = format!("fill-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        // All 5 keys must exist
+        let size_at_max = bh.state.read().len();
+        assert_eq!(size_at_max, 5, "no eviction at exactly max_tracked_keys");
+        for i in 0..5 {
+            let exists = bh.state.read().contains_key(&format!("fill-{i}"));
+            assert!(exists, "fill-{i} must exist at exactly the limit");
+        }
+    }
+
+    #[tokio::test]
+    async fn eviction_triggers_when_exceeding_max_keys_bulkhead() {
+        // Mutant kill: `>` vs `>=` — at max+1, eviction must trigger
+        let bh = InMemoryBulkhead::with_max_keys(5);
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Fill to exactly 5
+        for i in 0..5 {
+            let key = format!("fill-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        // Add one more — should trigger eviction
+        bh.acquire("trigger", &config).await.unwrap();
+        bh.release("trigger");
+
+        let size_after = bh.state.read().len();
+        assert!(
+            size_after <= 5,
+            "eviction should have reduced map size to at most max_tracked_keys, got {size_after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_eviction_below_max_keys_bulkhead() {
+        let bh = InMemoryBulkhead::with_max_keys(5);
+        let config = test_config(1, Duration::from_millis(100));
+
+        // Fill to 4 (below threshold)
+        for i in 0..4 {
+            let key = format!("fill-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        let size = bh.state.read().len();
+        assert_eq!(size, 4, "no eviction should happen below max_tracked_keys");
+    }
+
+    #[tokio::test]
+    async fn config_change_replaces_semaphore() {
+        let bh = InMemoryBulkhead::new();
+        let config2 = test_config(2, Duration::from_millis(100));
+        let config5 = test_config(5, Duration::from_millis(100));
+
+        bh.acquire("key-x", &config2).await.unwrap();
+        bh.release("key-x");
+
+        // Acquire 5 permits with max_concurrent=5
+        for _ in 0..5 {
+            bh.acquire("key-x", &config5).await.unwrap();
+        }
+
+        // 6th should fail (all 5 used)
+        let sixth = bh
+            .acquire("key-x", &test_config(5, Duration::from_millis(50)))
+            .await;
+        assert!(
+            sixth.is_err(),
+            "config change to max_concurrent=5 should allow exactly 5 permits, not more"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_match_returns_cached_semaphore() {
+        let bh = InMemoryBulkhead::new();
+        let config = test_config(1, Duration::from_millis(100));
+
+        bh.acquire("key-a", &config).await.unwrap();
+
+        let result = bh
+            .acquire("key-a", &test_config(1, Duration::from_millis(50)))
+            .await;
+        assert!(
+            result.is_err(),
+            "same config must reuse cached semaphore (no permits left)"
+        );
+    }
+
+    #[tokio::test]
+    async fn eviction_keeps_keys_with_outstanding_permits() {
+        let bh = InMemoryBulkhead::with_max_keys(5);
+        let config = test_config(2, Duration::from_millis(100));
+
+        // Create a key with an outstanding permit
+        bh.acquire("busy-key", &config).await.unwrap();
+
+        // Fill with idle keys (all permits released)
+        for i in 0..5 {
+            let key = format!("idle-{i}");
+            bh.acquire(&key, &config).await.unwrap();
+            bh.release(&key);
+        }
+
+        // Trigger eviction
+        bh.acquire("trigger-evict", &config).await.unwrap();
+        bh.release("trigger-evict");
+
+        // busy-key must survive eviction because it has outstanding permits
+        let map = bh.state.read();
+        assert!(
+            map.contains_key("busy-key"),
+            "key with outstanding permits must survive eviction"
+        );
+    }
+
+    #[tokio::test]
     async fn times_out_when_all_permits_taken() {
         let bh = InMemoryBulkhead::new();
         let config = test_config(1, Duration::from_millis(50));
 
-        // Acquire the single permit (don't release)
         bh.acquire("key-a", &config).await.unwrap();
 
-        // Second acquire should time out
         let result = bh.acquire("key-a", &config).await;
         assert!(result.is_err());
     }

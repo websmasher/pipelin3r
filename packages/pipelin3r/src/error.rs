@@ -24,6 +24,28 @@ pub enum PipelineError {
     /// Configuration is invalid.
     #[error("config error: {0}")]
     Config(String),
+    /// An agent invocation failed.
+    #[error("agent failed: {message}")]
+    AgentFailed {
+        /// Description of the failure.
+        message: String,
+    },
+    /// A batch had partial failures.
+    #[error("batch partial failure: {succeeded} succeeded, {failed} failed — {message}")]
+    BatchPartialFailure {
+        /// Number of tasks that succeeded.
+        succeeded: usize,
+        /// Number of tasks that failed.
+        failed: usize,
+        /// Summary message.
+        message: String,
+    },
+    /// An operation timed out.
+    #[error("timeout: {message}")]
+    Timeout {
+        /// Description of what timed out.
+        message: String,
+    },
     /// A filesystem I/O operation failed.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

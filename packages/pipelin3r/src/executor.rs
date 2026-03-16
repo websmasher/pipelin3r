@@ -7,8 +7,10 @@ use shedul3r_rs_sdk::{Client, ClientConfig};
 
 use crate::agent::AgentBuilder;
 use crate::auth::Auth;
+use crate::command::CommandBuilder;
 use crate::error::PipelineError;
 use crate::model::{ModelConfig, Provider};
+use crate::transform::TransformBuilder;
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
 pub struct Executor {
@@ -97,6 +99,16 @@ impl Executor {
     /// Create an agent builder for a named agent.
     pub fn agent(&self, name: &str) -> AgentBuilder<'_> {
         AgentBuilder::new(self, name)
+    }
+
+    /// Create a command builder for the given program.
+    pub fn command(&self, program: &str) -> CommandBuilder {
+        CommandBuilder::new(program)
+    }
+
+    /// Create a transform builder for the given step name.
+    pub fn transform(&self, name: &str) -> TransformBuilder {
+        TransformBuilder::new(name)
     }
 
     /// Get a reference to the underlying SDK client.
@@ -206,6 +218,46 @@ mod tests {
     fn executor_with_defaults_succeeds() {
         let result = Executor::with_defaults();
         assert!(result.is_ok(), "should create executor with defaults");
+    }
+
+    #[test]
+    fn mutant_kill_default_provider_returns_set_value() {
+        // Mutant kill: executor.rs:126 — default_provider() replaced with None
+        let executor = Executor::with_defaults()
+            .unwrap_or_else(|_| std::process::abort())
+            .with_default_provider(Provider::OpenRouter);
+        let provider = executor.default_provider();
+        assert!(
+            provider.is_some(),
+            "default_provider() must return Some after with_default_provider()"
+        );
+        assert!(
+            matches!(provider, Some(Provider::OpenRouter)),
+            "default_provider() must return the provider that was set"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_is_remote_default_false() {
+        // Mutant kill: executor.rs:141 — is_remote() replaced with true
+        let executor = Executor::with_defaults()
+            .unwrap_or_else(|_| std::process::abort());
+        assert!(
+            !executor.is_remote(),
+            "is_remote() must be false by default, not true"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_is_remote_true_after_with_remote() {
+        // Mutant kill: executor.rs:141 — is_remote() replaced with false
+        let executor = Executor::with_defaults()
+            .unwrap_or_else(|_| std::process::abort())
+            .with_remote();
+        assert!(
+            executor.is_remote(),
+            "is_remote() must be true after with_remote()"
+        );
     }
 
     #[test]

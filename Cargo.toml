@@ -5,6 +5,7 @@ members = [
     "packages/limit3r",
     "packages/shedul3r-rs-sdk",
     "packages/pipelin3r",
+    "packages/shedul3r-bin",
 ]
 exclude = ["apps/shedul3r"]
 resolver = "2"

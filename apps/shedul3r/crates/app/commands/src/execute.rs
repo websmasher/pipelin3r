@@ -120,10 +120,16 @@ where
 
         // Acquire resilience permits (rate limit, circuit breaker, bulkhead).
         // The returned guard (if any) releases the bulkhead permit on drop.
+        // Use per-task circuit breaker config if provided, otherwise fall back to defaults.
+        let cb_config = definition
+            .circuit_breaker_config
+            .clone()
+            .unwrap_or_else(default_circuit_breaker_config);
+
         let mut permit_guard: Option<BulkheadPermitGuard<B>> = None;
         if let Some(ref key) = limiter_key {
             match self
-                .acquire_resilience_permits(key, &definition, &started_at, start)
+                .acquire_resilience_permits(key, &definition, &cb_config, &started_at, start)
                 .await
             {
                 Ok(guard) => permit_guard = guard,
@@ -132,6 +138,11 @@ where
                     return Ok(early);
                 }
             }
+        }
+
+        // Validate working directory if provided.
+        if let Some(ref dir) = request.working_directory {
+            validate_working_directory(dir)?;
         }
 
         // Build subprocess command
@@ -184,7 +195,12 @@ where
 
     /// Return the status of all known limiter keys.
     ///
-    /// Currently returns an empty list; will be wired to adapters later.
+    /// **Intentionally deferred:** Returns an empty list because the current
+    /// hexagonal architecture passes adapters as trait-bounded generics.
+    /// Inspecting adapter state (e.g. rate limiter permit counts, circuit
+    /// breaker open/closed) requires adding state-inspection methods to the
+    /// port traits (`RateLimiter`, `CircuitBreaker`). This is deferred until
+    /// the port trait interfaces are extended to support introspection.
     pub const fn limiter_status(&self) -> Vec<LimiterKeyStatus> {
         Vec::new()
     }
@@ -228,6 +244,7 @@ where
         &self,
         key: &str,
         definition: &domain_types::TaskDefinition,
+        cb_config: &CircuitBreakerConfig,
         started_at: &str,
         start: Instant,
     ) -> Result<Option<BulkheadPermitGuard<B>>, TaskResponse> {
@@ -243,8 +260,7 @@ where
         }
 
         // Circuit breaker check
-        let cb_config = default_circuit_breaker_config();
-        if let Err(e) = self.circuit_breaker.check_permitted(key, &cb_config) {
+        if let Err(e) = self.circuit_breaker.check_permitted(key, cb_config) {
             return Err(build_failure_response(
                 started_at.to_owned(),
                 start,
@@ -294,7 +310,7 @@ fn build_task_response(
             metadata: ExecutionMetadata {
                 started_at,
                 elapsed,
-                exit_code: 1,
+                exit_code: result.exit_code,
             },
         }
     }
@@ -344,13 +360,52 @@ fn exec_result_to_response(
     }
 }
 
-/// Build the default circuit breaker configuration.
+/// Build the default circuit breaker configuration used when no per-task
+/// `circuit-breaker` YAML block is provided.
 const fn default_circuit_breaker_config() -> CircuitBreakerConfig {
     CircuitBreakerConfig {
         failure_rate_threshold: DEFAULT_CB_FAILURE_RATE,
         sliding_window_size: DEFAULT_CB_WINDOW_SIZE,
         wait_duration_in_open_state: Duration::from_secs(DEFAULT_CB_WAIT_SECS),
     }
+}
+
+/// Validate that a working directory path is safe for subprocess execution.
+///
+/// # Rules
+/// - Must be an absolute path
+/// - Must not contain path traversal components (`..`)
+/// - Must exist and be a directory on the filesystem
+///
+/// # Errors
+///
+/// Returns [`SchedulrError::TaskDefinition`] if any rule is violated.
+fn validate_working_directory(dir: &std::path::Path) -> Result<(), SchedulrError> {
+    if !dir.is_absolute() {
+        return Err(SchedulrError::TaskDefinition(format!(
+            "working_directory must be an absolute path, got: {}",
+            dir.display()
+        )));
+    }
+
+    // Reject path traversal components.
+    for component in dir.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(SchedulrError::TaskDefinition(format!(
+                "working_directory must not contain '..' path traversal: {}",
+                dir.display()
+            )));
+        }
+    }
+
+    if !dir.is_dir() {
+        return Err(SchedulrError::TaskDefinition(format!(
+            "working_directory does not exist or is not a directory: {}",
+            dir.display()
+        )));
+    }
+
+    Ok(())
 }
 
 /// Format a [`SystemTime`] as an ISO-8601 string (UTC, second precision).

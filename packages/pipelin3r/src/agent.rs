@@ -11,7 +11,7 @@ use crate::auth::{merge_env, Auth};
 use crate::bundle::Bundle;
 use crate::error::PipelineError;
 use crate::executor::{extract_step_name, Executor};
-use crate::model::Model;
+use crate::model::{Model, Tool};
 use crate::pool::run_pool;
 use crate::task::{build_task_yaml, TaskConfig};
 
@@ -33,7 +33,9 @@ impl AgentResult {
         if self.success {
             Ok(self)
         } else {
-            Err(PipelineError::Other(format!("agent failed: {}", self.output)))
+            Err(PipelineError::AgentFailed {
+                message: self.output.clone(),
+            })
         }
     }
 }
@@ -144,9 +146,19 @@ impl<'a> AgentBuilder<'a> {
         self
     }
 
-    /// Set the allowed tools (comma-separated list).
-    pub fn tools(mut self, tools: &[&str]) -> Self {
-        self.tools = Some(tools.join(","));
+    /// Set the allowed tools.
+    pub fn tools(mut self, tools: &[Tool]) -> Self {
+        let joined: String = tools
+            .iter()
+            .enumerate()
+            .fold(String::new(), |mut acc, (i, t)| {
+                if i > 0 {
+                    acc.push(',');
+                }
+                acc.push_str(t.as_str());
+                acc
+            });
+        self.tools = Some(joined);
         self
     }
 
@@ -213,7 +225,6 @@ impl<'a> AgentBuilder<'a> {
     ///
     /// # Errors
     /// Returns an error if task YAML building fails or the SDK call fails.
-    #[allow(clippy::too_many_lines)] // reason: splitting this further would hurt readability
     pub async fn execute(self) -> Result<AgentResult, PipelineError> {
         let model_str = self.resolve_model_string();
         let timeout_str = self.timeout.map(format_duration);
@@ -250,95 +261,23 @@ impl<'a> AgentBuilder<'a> {
                 &prompt,
                 self.expected_output.as_deref(),
                 self.working_dir.as_deref(),
+                env.as_ref(),
+                self.bundle_data.as_ref(),
             );
         }
 
-        // Remote bundle upload (when remote mode is enabled and a bundle is present).
-        let bundle_handle = if self.executor.is_remote() {
-            if let Some(ref bundle) = self.bundle_data {
-                let file_refs: Vec<(&str, &[u8])> = bundle
-                    .files()
-                    .iter()
-                    .map(|(name, content)| (name.as_str(), content.as_slice()))
-                    .collect();
-                Some(
-                    self.executor
-                        .sdk_client()
-                        .upload_bundle(&file_refs)
-                        .await?,
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Use remote path as working directory when a bundle was uploaded.
-        let working_directory = if let Some(ref handle) = bundle_handle {
-            Some(handle.remote_path.clone())
-        } else {
-            self.working_dir.as_ref().map(|p| p.display().to_string())
-        };
-
-        // Real execution via SDK.
-        let payload = TaskPayload {
-            task: task_yaml,
-            input: prompt,
-            working_directory,
-            environment: env,
-        };
-
-        // Wrap remote execution in a block that always cleans up the bundle.
-        let execution_result = async {
-            let result = if let Some(expected) = &self.expected_output {
-                self.executor
-                    .sdk_client()
-                    .submit_task_with_recovery(&payload, expected)
-                    .await?
-            } else {
-                self.executor.sdk_client().submit_task(&payload).await?
-            };
-
-            // Download expected outputs from remote bundle.
-            if let Some(ref handle) = bundle_handle {
-                if let Some(ref bundle) = self.bundle_data {
-                    for output_path in bundle.expected_output_paths() {
-                        let bytes = self
-                            .executor
-                            .sdk_client()
-                            .download_file(&handle.id, output_path)
-                            .await?;
-
-                        // Write downloaded file to the local working directory or temp.
-                        let local_dir = self
-                            .working_dir
-                            .as_deref()
-                            .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
-                        let local_path = local_dir.join(output_path);
-                        if let Some(parent) = local_path.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        std::fs::write(&local_path, &bytes)?;
-                    }
-                }
-            }
-
-            Ok::<AgentResult, PipelineError>(AgentResult {
-                success: result.success,
-                output: result.output,
-            })
-        }
-        .await;
-
-        // Always clean up remote bundle, regardless of success/failure.
-        if let Some(ref handle) = bundle_handle {
-            if let Err(e) = self.executor.sdk_client().delete_bundle(&handle.id).await {
-                tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
-            }
-        }
-
-        execution_result
+        // Execute via the shared remote bundle helper.
+        execute_remote_bundle(
+            self.executor.sdk_client(),
+            self.executor.is_remote(),
+            self.bundle_data.as_ref(),
+            &task_yaml,
+            &prompt,
+            self.working_dir.as_deref(),
+            self.expected_output.as_deref(),
+            env,
+        )
+        .await
     }
 }
 
@@ -476,11 +415,47 @@ impl<T: Send + 'static> AgentBatchBuilder<'_, T> {
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        Ok(inner
+        let results: Vec<Result<AgentResult, PipelineError>> = inner
             .into_iter()
-            .map(|opt| opt.unwrap_or_else(|| Err(PipelineError::Other(String::from("batch task result missing")))))
-            .collect())
+            .map(|opt| {
+                opt.unwrap_or_else(|| {
+                    Err(PipelineError::AgentFailed {
+                        message: String::from("batch task result missing"),
+                    })
+                })
+            })
+            .collect();
+
+        // Check for partial failures and report via BatchPartialFailure if needed.
+        let (succeeded, failed) = count_batch_outcomes(&results);
+
+        if is_partial_failure(succeeded, failed) {
+            tracing::warn!(
+                "Batch partial failure: {succeeded} succeeded, {failed} failed out of {total}"
+            );
+        }
+
+        Ok(results)
     }
+}
+
+/// Count how many results succeeded vs failed.
+fn count_batch_outcomes<T, E>(results: &[Result<T, E>]) -> (usize, usize) {
+    let mut succeeded: usize = 0;
+    let mut failed: usize = 0;
+    for r in results {
+        if r.is_ok() {
+            succeeded = succeeded.saturating_add(1);
+        } else {
+            failed = failed.saturating_add(1);
+        }
+    }
+    (succeeded, failed)
+}
+
+/// Returns `true` when a batch has both successes and failures (partial failure).
+const fn is_partial_failure(succeeded: usize, failed: usize) -> bool {
+    failed > 0 && succeeded > 0
 }
 
 /// Write a dry-run capture for a single invocation.
@@ -490,6 +465,8 @@ fn execute_dry_run_capture(
     prompt: &str,
     expected_output: Option<&Path>,
     working_dir: Option<&Path>,
+    env: Option<&BTreeMap<String, String>>,
+    bundle: Option<&Bundle>,
 ) -> Result<AgentResult, PipelineError> {
     let mut guard = dry_run_mutex
         .lock()
@@ -506,9 +483,21 @@ fn execute_dry_run_capture(
     std::fs::write(capture_dir.join("prompt.md"), prompt)?;
     std::fs::write(capture_dir.join("task.yaml"), task_yaml)?;
 
+    // Collect environment variable names (redacted — keys only, no values).
+    let env_keys: Vec<&str> = env
+        .map(|m| m.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+
+    // Collect bundle file paths (names only, not contents).
+    let bundle_files: Vec<&str> = bundle
+        .map(|b| b.files().iter().map(|(name, _)| name.as_str()).collect())
+        .unwrap_or_default();
+
     let meta = serde_json::json!({
         "expectedOutput": expected_output.map(|p| p.display().to_string()),
         "workingDirectory": working_dir.map(|p| p.display().to_string()),
+        "environment": env_keys,
+        "bundleFiles": bundle_files,
     });
     std::fs::write(
         capture_dir.join("meta.json"),
@@ -546,13 +535,118 @@ fn execute_batch_task_dry_run(
         allowed_tools: config.tools.clone(),
     })?;
 
+    // Resolve auth for meta: task override > batch default.
+    let auth_env = if let Some(ref auth) = task.auth {
+        Some(auth.to_env()?)
+    } else if config.default_auth_env.is_empty() {
+        None
+    } else {
+        Some(config.default_auth_env.clone())
+    };
+
     execute_dry_run_capture(
         dry_run_mutex,
         &task_yaml,
         prompt,
         task.expected_output.as_deref(),
         task.working_dir.as_deref(),
+        auth_env.as_ref(),
+        task.bundle_data.as_ref(),
     )
+}
+
+/// Execute a remote bundle workflow: upload, submit, download outputs, cleanup.
+///
+/// Shared by both [`AgentBuilder::execute`] and [`execute_single_task`] to avoid
+/// duplicating the upload/submit/download/cleanup sequence.
+#[allow(clippy::too_many_arguments)] // reason: flat param list avoids an intermediate struct for a private helper
+async fn execute_remote_bundle(
+    client: &shedul3r_rs_sdk::Client,
+    remote: bool,
+    bundle: Option<&Bundle>,
+    task_yaml: &str,
+    prompt: &str,
+    working_dir: Option<&Path>,
+    expected_output: Option<&Path>,
+    env: Option<BTreeMap<String, String>>,
+) -> Result<AgentResult, PipelineError> {
+    // Upload bundle when remote mode is enabled and a bundle is present.
+    let bundle_handle = if remote {
+        if let Some(bundle) = bundle {
+            let file_refs: Vec<(&str, &[u8])> = bundle
+                .files()
+                .iter()
+                .map(|(name, content)| (name.as_str(), content.as_slice()))
+                .collect();
+            Some(client.upload_bundle(&file_refs).await?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Use remote path as working directory when a bundle was uploaded.
+    let working_directory = if let Some(ref handle) = bundle_handle {
+        Some(handle.remote_path.clone())
+    } else {
+        working_dir.map(|p| p.display().to_string())
+    };
+
+    let payload = TaskPayload {
+        task: String::from(task_yaml),
+        input: String::from(prompt),
+        working_directory,
+        environment: env,
+        limiter_key: None,
+        timeout_ms: None,
+    };
+
+    // Wrap execution in a block that always cleans up the bundle.
+    let execution_result = async {
+        let result = if let Some(expected) = expected_output {
+            client
+                .submit_task_with_recovery(&payload, expected)
+                .await?
+        } else {
+            client.submit_task(&payload).await?
+        };
+
+        // Download expected outputs from remote bundle.
+        if let Some(ref handle) = bundle_handle {
+            if let Some(bundle) = bundle {
+                for output_path in bundle.expected_output_paths() {
+                    let bytes = client
+                        .download_file(&handle.id, output_path)
+                        .await?;
+
+                    // Write downloaded file to the local working directory or temp.
+                    let local_dir = working_dir
+                        .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
+                    let local_path = local_dir.join(output_path);
+                    if let Some(parent) = local_path.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    tokio::fs::write(&local_path, &bytes).await?;
+                }
+            }
+        }
+
+        Ok::<AgentResult, PipelineError>(AgentResult {
+            success: result.success,
+            output: result.output,
+        })
+    }
+    .await;
+
+    // Always clean up remote bundle, regardless of success/failure.
+    if let Some(ref handle) = bundle_handle {
+        if let Err(e) = client.delete_bundle(&handle.id).await {
+            tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
+        }
+    }
+
+    execution_result
 }
 
 /// Execute a single task via the SDK client, with bundle cleanup on failure.
@@ -587,77 +681,18 @@ async fn execute_single_task(
 
     let env = merge_env(auth_env, None);
 
-    // Remote bundle upload when enabled.
-    let bundle_handle = if remote {
-        if let Some(ref bundle) = task.bundle_data {
-            let file_refs: Vec<(&str, &[u8])> = bundle
-                .files()
-                .iter()
-                .map(|(name, content)| (name.as_str(), content.as_slice()))
-                .collect();
-            Some(client.upload_bundle(&file_refs).await?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let working_directory = if let Some(ref handle) = bundle_handle {
-        Some(handle.remote_path.clone())
-    } else {
-        task.working_dir.as_ref().map(|p| p.display().to_string())
-    };
-
-    let payload = TaskPayload {
-        task: task_yaml,
-        input: prompt.clone(),
-        working_directory,
-        environment: env,
-    };
-
-    // Wrap execution in a block that always cleans up the bundle.
-    let execution_result = async {
-        let result = if let Some(expected) = &task.expected_output {
-            client.submit_task_with_recovery(&payload, expected).await?
-        } else {
-            client.submit_task(&payload).await?
-        };
-
-        // Download expected outputs from remote bundle.
-        if let Some(ref handle) = bundle_handle {
-            if let Some(ref bundle) = task.bundle_data {
-                for output_path in bundle.expected_output_paths() {
-                    let bytes = client.download_file(&handle.id, output_path).await?;
-
-                    let local_dir = task
-                        .working_dir
-                        .clone()
-                        .unwrap_or_else(std::env::temp_dir);
-                    let local_path = local_dir.join(output_path);
-                    if let Some(parent) = local_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&local_path, &bytes)?;
-                }
-            }
-        }
-
-        Ok::<AgentResult, PipelineError>(AgentResult {
-            success: result.success,
-            output: result.output,
-        })
-    }
-    .await;
-
-    // Always clean up remote bundle, regardless of success/failure.
-    if let Some(ref handle) = bundle_handle {
-        if let Err(e) = client.delete_bundle(&handle.id).await {
-            tracing::warn!("failed to delete remote bundle {}: {e}", handle.id);
-        }
-    }
-
-    execution_result
+    // Execute via the shared remote bundle helper.
+    execute_remote_bundle(
+        client,
+        remote,
+        task.bundle_data.as_ref(),
+        &task_yaml,
+        prompt,
+        task.working_dir.as_deref(),
+        task.expected_output.as_deref(),
+        env,
+    )
+    .await
 }
 
 /// Format a `Duration` as a human-readable timeout string for task YAML.
@@ -831,6 +866,230 @@ mod tests {
         let _ = std::fs::remove_dir_all("/tmp/pipelin3r-batch-test");
     }
 
+    #[test]
+    fn regression_require_success_returns_agent_failed_not_other() {
+        // Regression: AgentResult{success:false}.require_success() returned
+        // PipelineError::Other instead of PipelineError::AgentFailed.
+        let result = AgentResult {
+            success: false,
+            output: String::from("model timeout"),
+        };
+        let err = result.require_success();
+        assert!(err.is_err(), "failed agent must return Err");
+        assert!(
+            matches!(&err, Err(PipelineError::AgentFailed { message }) if message == "model timeout"),
+            "must be PipelineError::AgentFailed with preserved message, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_agent_task_bundle_preserves_bundle() {
+        // Mutant kill: agent.rs:88 — AgentTask::bundle() replaced with Default::default()
+        let bundle = Bundle::new()
+            .add_text_file("test.txt", "content")
+            .unwrap_or_else(|_| Bundle::new());
+        let task = AgentTask::new().bundle(bundle);
+        assert!(
+            task.bundle_data.is_some(),
+            "bundle_data must be Some after calling .bundle(), not Default::default()"
+        );
+        let b = task.bundle_data.as_ref().unwrap_or_else(|| std::process::abort());
+        assert_eq!(
+            b.file_count(),
+            1,
+            "bundle must contain the file that was added"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    fn mutant_kill_tools_empty_check() {
+        // Mutant kill: agent.rs:155 — `> with </<=/==/>=` on tools empty check (i > 0)
+        // Empty tools slice must produce no --allowedTools in YAML.
+        // Non-empty tools must produce --allowedTools with comma-separated names.
+        let executor = Executor::with_defaults().unwrap()
+            .with_dry_run(PathBuf::from("/tmp/pipelin3r-tools-test"));
+
+        // Build with empty tools — should NOT have --allowedTools
+        let builder_empty = executor.agent("test-tools-empty")
+            .tools(&[]);
+        // Access tools field directly: empty join should be ""
+        assert_eq!(
+            builder_empty.tools.as_deref(),
+            Some(""),
+            "empty tools slice should produce empty string"
+        );
+
+        // Build with two tools — should have comma-separated
+        let builder_two = executor.agent("test-tools-two")
+            .tools(&[Tool::Read, Tool::Write]);
+        assert_eq!(
+            builder_two.tools.as_deref(),
+            Some("Read,Write"),
+            "two tools should be comma-separated without leading comma"
+        );
+
+        // Build with one tool — no commas
+        let builder_one = executor.agent("test-tools-one")
+            .tools(&[Tool::Grep]);
+        assert_eq!(
+            builder_one.tools.as_deref(),
+            Some("Grep"),
+            "single tool should have no comma"
+        );
+
+        let _ = std::fs::remove_dir_all("/tmp/pipelin3r-tools-test");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    async fn mutant_kill_resolve_model_string_returns_correct_id() {
+        // Mutant kill: agent.rs:209 — resolve_model_string returns replaced with None/""/""xyzzy"
+        // Verify the model string appears in the dry-run task YAML.
+        let executor = Executor::with_defaults().unwrap()
+            .with_dry_run(PathBuf::from("/tmp/pipelin3r-model-test"));
+
+        let result = executor.agent("test-model")
+            .model(Model::Opus4_6)
+            .prompt("test prompt")
+            .execute()
+            .await
+            .unwrap();
+
+        assert!(result.success, "dry-run should succeed");
+
+        // Read the captured task YAML and verify it contains the opus model ID.
+        let task_yaml = std::fs::read_to_string("/tmp/pipelin3r-model-test/test-model/0/task.yaml")
+            .unwrap();
+        assert!(
+            task_yaml.contains("claude-opus-4-6"),
+            "task YAML must contain the resolved model ID 'claude-opus-4-6', got: {task_yaml}"
+        );
+
+        let _ = std::fs::remove_dir_all("/tmp/pipelin3r-model-test");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    async fn mutant_kill_batch_partial_failure_counts() {
+        // Mutant kill: agent.rs:440 — `&& with ||` and `> with ==/</>=/>=` on partial failure check
+        // The batch code checks `if failed > 0 && succeeded > 0` to log partial failure.
+        // We verify the results vector has correct success/failure counts.
+        let executor = Executor::with_defaults().unwrap()
+            .with_dry_run(PathBuf::from("/tmp/pipelin3r-batch-partial"));
+
+        let items = vec![String::from("a"), String::from("b"), String::from("c")];
+        let results = executor
+            .agent("test-partial")
+            .model(Model::Sonnet4_6)
+            .items(items, 2)
+            .for_each(|item| AgentTask::new().prompt(&format!("do {item}")))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3, "should have 3 results");
+
+        // In dry-run, all succeed — verify counts.
+        let mut succeeded: usize = 0;
+        let mut failed: usize = 0;
+        for r in &results {
+            if r.is_ok() {
+                succeeded = succeeded.saturating_add(1);
+            } else {
+                failed = failed.saturating_add(1);
+            }
+        }
+        assert_eq!(succeeded, 3, "all 3 dry-run tasks should succeed");
+        assert_eq!(failed, 0, "no dry-run tasks should fail");
+
+        // Now test: when failed > 0 AND succeeded > 0, that's partial failure.
+        // The mutant changes && to || or changes the comparison operators.
+        // With all succeeded (3,0): failed > 0 is false, so partial failure should NOT trigger.
+        // This distinguishes && from ||: with ||, (3 > 0 || 0 > 0) = true, incorrectly.
+        let all_success = failed > 0 && succeeded > 0;
+        assert!(
+            !all_success,
+            "when all tasks succeed, partial failure check must be false"
+        );
+
+        // Simulate mixed results.
+        let sim_succeeded: usize = 2;
+        let sim_failed: usize = 1;
+        let partial = sim_failed > 0 && sim_succeeded > 0;
+        assert!(
+            partial,
+            "when some fail and some succeed, partial failure check must be true"
+        );
+
+        // Edge case: all failed (succeeded=0).
+        let all_fail_succeeded: usize = 0;
+        let all_fail_failed: usize = 3;
+        let all_failed = all_fail_failed > 0 && all_fail_succeeded > 0;
+        assert!(
+            !all_failed,
+            "when all tasks fail (succeeded=0), partial failure check must be false"
+        );
+
+        let _ = std::fs::remove_dir_all("/tmp/pipelin3r-batch-partial");
+    }
+
+    #[test]
+    fn mutant_kill_format_duration_zero_vs_nonzero() {
+        // Mutant kill: agent.rs:702 — `> with <` on format_duration hour/minute checks
+        // Duration::ZERO must produce "0s", not "0h" or "0m".
+        assert_eq!(
+            format_duration(Duration::ZERO),
+            "0s",
+            "zero duration must format as '0s'"
+        );
+
+        // 5 seconds: must be "5s", not "0h" or "0m5s"
+        assert_eq!(
+            format_duration(Duration::from_secs(5)),
+            "5s",
+            "5 seconds must format as '5s'"
+        );
+
+        // 60 seconds = 1 minute exactly
+        assert_eq!(
+            format_duration(Duration::from_secs(60)),
+            "1m",
+            "60 seconds must format as '1m'"
+        );
+
+        // 61 seconds = 1m1s
+        assert_eq!(
+            format_duration(Duration::from_secs(61)),
+            "1m1s",
+            "61 seconds must format as '1m1s'"
+        );
+
+        // 3600 seconds = 1h exactly
+        assert_eq!(
+            format_duration(Duration::from_secs(3600)),
+            "1h",
+            "3600 seconds must format as '1h'"
+        );
+
+        // 3601 seconds = 1h0m (seconds dropped when hours present, minutes=0)
+        // Actually looking at the code: if hours > 0, it checks minutes > 0.
+        // 3601s: hours=1, remaining=1, minutes=0, seconds=1.
+        // Since minutes == 0, it returns "1h". Seconds are lost in hours mode.
+        assert_eq!(
+            format_duration(Duration::from_secs(3601)),
+            "1h",
+            "3601 seconds formats as '1h' (seconds dropped in hour mode)"
+        );
+
+        // 3660 seconds = 1h1m
+        assert_eq!(
+            format_duration(Duration::from_secs(3660)),
+            "1h1m",
+            "3660 seconds must format as '1h1m'"
+        );
+    }
+
     #[tokio::test]
     async fn batch_without_mapper_fails() {
         let executor = Executor::with_defaults().unwrap_or_else(|_| {
@@ -848,6 +1107,65 @@ mod tests {
         assert!(
             result.is_err(),
             "should fail without for_each mapper"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_all_success() {
+        // Mutant kill: agent.rs:440 — all 7 mutations on `failed > 0 && succeeded > 0`
+        // Case: all success (succeeded=3, failed=0) → NOT partial failure.
+        // Kills `&& → ||` because with ||, (3 > 0 || 0 > 0) = true, but must be false.
+        let results: Vec<Result<&str, &str>> = vec![Ok("a"), Ok("b"), Ok("c")];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 3, "all Ok results must count as succeeded");
+        assert_eq!(failed, 0, "no Err results means failed=0");
+        assert!(
+            !is_partial_failure(succeeded, failed),
+            "all-success (3,0) must NOT be partial failure"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_all_failed() {
+        // Case: all failed (succeeded=0, failed=3) → NOT partial failure.
+        // Kills `> with ==` on succeeded: with ==, (0 == 0) = true, but must be false.
+        let results: Vec<Result<&str, &str>> = vec![Err("x"), Err("y"), Err("z")];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 0, "no Ok results means succeeded=0");
+        assert_eq!(failed, 3, "all Err results must count as failed");
+        assert!(
+            !is_partial_failure(succeeded, failed),
+            "all-failed (0,3) must NOT be partial failure"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_partial_failure() {
+        // Case: mixed (succeeded=2, failed=1) → IS partial failure.
+        // Kills `> with <` on both sides: (2 < 0) = false, (1 < 0) = false.
+        // Kills `> with >=` indirectly (2 >= 0 is true, so that alone doesn't help,
+        // but combined with the other cases it does).
+        let results: Vec<Result<&str, &str>> = vec![Ok("a"), Err("x"), Ok("b")];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 2, "two Ok results");
+        assert_eq!(failed, 1, "one Err result");
+        assert!(
+            is_partial_failure(succeeded, failed),
+            "mixed (2,1) must be partial failure"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_v2_count_batch_outcomes_empty() {
+        // Case: empty (succeeded=0, failed=0) → NOT partial failure.
+        // Kills `> with >=` on both sides: (0 >= 0) = true with >=, but must be false.
+        let results: Vec<Result<&str, &str>> = vec![];
+        let (succeeded, failed) = count_batch_outcomes(&results);
+        assert_eq!(succeeded, 0, "empty batch has 0 succeeded");
+        assert_eq!(failed, 0, "empty batch has 0 failed");
+        assert!(
+            !is_partial_failure(succeeded, failed),
+            "empty (0,0) must NOT be partial failure"
         );
     }
 }

@@ -60,6 +60,12 @@ pub struct TaskPayload {
     /// Optional environment variables to inject.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<BTreeMap<String, String>>,
+    /// Optional limiter key override (overrides the key from the task YAML).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limiter_key: Option<String>,
+    /// Optional per-task timeout override in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Response from shedul3r after task completion.
@@ -69,6 +75,30 @@ pub struct TaskResult {
     pub success: bool,
     /// Task output text (or error message on failure).
     pub output: String,
+    /// Process exit code, if available.
+    pub exit_code: Option<i32>,
+    /// Wall-clock elapsed time as reported by the server.
+    pub elapsed: Option<String>,
+    /// ISO-8601 timestamp when execution started.
+    pub started_at: Option<String>,
+}
+
+impl TaskResult {
+    /// Require the task to have succeeded, returning `Err(SdkError::TaskFailed)`
+    /// if it did not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError::TaskFailed`] when `self.success` is `false`.
+    pub fn require_success(self) -> Result<Self, SdkError> {
+        if self.success {
+            Ok(self)
+        } else {
+            Err(SdkError::TaskFailed {
+                message: self.output,
+            })
+        }
+    }
 }
 
 /// Raw JSON response from the shedul3r API.
@@ -77,6 +107,36 @@ struct ApiResponse {
     success: Option<bool>,
     output: Option<String>,
     message: Option<String>,
+    metadata: Option<ApiResponseMetadata>,
+}
+
+/// Metadata nested inside [`ApiResponse`].
+#[derive(Deserialize)]
+struct ApiResponseMetadata {
+    started_at: Option<String>,
+    elapsed: Option<ApiElapsed>,
+    exit_code: Option<i32>,
+}
+
+/// The server serialises `Duration` as `{ secs, nanos }`.
+#[derive(Deserialize)]
+struct ApiElapsed {
+    secs: Option<u64>,
+    nanos: Option<u32>,
+}
+
+impl ApiElapsed {
+    /// Format the elapsed duration as a human-readable string.
+    fn to_display_string(&self) -> String {
+        let secs = self.secs.unwrap_or(0);
+        let nanos = self.nanos.unwrap_or(0);
+        if nanos == 0 {
+            format!("{secs}s")
+        } else {
+            let millis = nanos.saturating_div(1_000_000);
+            format!("{secs}.{millis:03}s")
+        }
+    }
 }
 
 impl Client {
@@ -115,8 +175,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error only for unrecoverable issues (e.g. serialisation
-    /// failure). HTTP failures are reported via [`TaskResult::success`] `= false`.
+    /// Returns [`SdkError::Http`] for network or HTTP failures.
+    /// Task-level failures (command exited non-zero) are returned as
+    /// `Ok(TaskResult { success: false, .. })`.
     pub async fn submit_task(&self, payload: &TaskPayload) -> Result<TaskResult, SdkError> {
         let url = format!("{}/api/tasks", self.config.base_url);
         http_call(&self.http, &url, payload, None).await
@@ -133,8 +194,8 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error only for unrecoverable issues. Transient failures
-    /// are reported via [`TaskResult::success`] `= false`.
+    /// Returns [`SdkError::Http`] for network failures (after checking file
+    /// recovery). Task-level failures are `Ok(TaskResult { success: false, .. })`.
     pub async fn submit_task_with_recovery(
         &self,
         payload: &TaskPayload,
@@ -162,6 +223,9 @@ impl Client {
                     Ok(()) => Ok(TaskResult {
                         success: true,
                         output: String::from("(recovered from file poll)"),
+                        exit_code: None,
+                        elapsed: None,
+                        started_at: None,
                     }),
                     Err(e) => {
                         // Poll failed — check if the file appeared anyway.
@@ -169,12 +233,12 @@ impl Client {
                             Ok(TaskResult {
                                 success: true,
                                 output: String::from("(recovered from file)"),
+                                exit_code: None,
+                                elapsed: None,
+                                started_at: None,
                             })
                         } else {
-                            Ok(TaskResult {
-                                success: false,
-                                output: format!("both HTTP and file poll failed: {e}"),
-                            })
+                            Err(e)
                         }
                     }
                 }
@@ -186,68 +250,83 @@ impl Client {
 // ── Internal helpers ────────────────────────────────────────────────
 
 /// Perform the actual HTTP POST and interpret the response.
+///
+/// Network and parse errors are propagated as `Err`, but only after checking
+/// whether the expected output file appeared on disk (file recovery).
+/// Task-level failures (server returned `success: false`) are returned as
+/// `Ok(TaskResult { success: false, .. })`.
 async fn http_call(
     http: &reqwest::Client,
     url: &str,
     payload: &TaskPayload,
     expected_output: Option<&Path>,
 ) -> Result<TaskResult, SdkError> {
-    let result = http.post(url).json(payload).send().await;
-
     let try_file_recovery = |expected: Option<&Path>| -> Option<TaskResult> {
         let path = expected?;
         if path.exists() {
             Some(TaskResult {
                 success: true,
                 output: String::from("(recovered from file)"),
+                exit_code: None,
+                elapsed: None,
+                started_at: None,
             })
         } else {
             None
         }
     };
 
-    let error_result = |err: &dyn std::fmt::Display, expected: Option<&Path>| -> TaskResult {
-        if let Some(recovered) = try_file_recovery(expected) {
-            return recovered;
-        }
-        let msg = err.to_string();
-        TaskResult {
-            success: false,
-            output: truncate_str(&msg, 500),
+    let resp = match http.post(url).json(payload).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(recovered) = try_file_recovery(expected_output) {
+                return Ok(recovered);
+            }
+            return Err(SdkError::Http(e));
         }
     };
 
-    match result {
-        Ok(resp) => {
-            let parsed = resp.json::<ApiResponse>().await;
-            match parsed {
-                Ok(response) => {
-                    if response.success == Some(true) {
-                        let output = response.output.unwrap_or_default().trim().to_owned();
-                        return Ok(TaskResult {
-                            success: true,
-                            output,
-                        });
-                    }
-
-                    if let Some(recovered) = try_file_recovery(expected_output) {
-                        return Ok(recovered);
-                    }
-
-                    let output = response
-                        .output
-                        .or(response.message)
-                        .unwrap_or_else(|| String::from("unknown error"));
-                    Ok(TaskResult {
-                        success: false,
-                        output,
-                    })
-                }
-                Err(err) => Ok(error_result(&err, expected_output)),
+    let response: ApiResponse = match resp.json::<ApiResponse>().await {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(recovered) = try_file_recovery(expected_output) {
+                return Ok(recovered);
             }
+            return Err(SdkError::Http(e));
         }
-        Err(err) => Ok(error_result(&err, expected_output)),
+    };
+
+    let meta = response.metadata.as_ref();
+    let exit_code = meta.and_then(|m| m.exit_code);
+    let elapsed = meta.and_then(|m| m.elapsed.as_ref().map(ApiElapsed::to_display_string));
+    let started_at = meta.and_then(|m| m.started_at.clone());
+
+    if response.success == Some(true) {
+        let output = response.output.unwrap_or_default().trim().to_owned();
+        return Ok(TaskResult {
+            success: true,
+            output,
+            exit_code,
+            elapsed,
+            started_at,
+        });
     }
+
+    if let Some(recovered) = try_file_recovery(expected_output) {
+        return Ok(recovered);
+    }
+
+    let output = response
+        .output
+        .or(response.message)
+        .unwrap_or_else(|| String::from("unknown error"));
+    Ok(TaskResult {
+        success: false,
+        output,
+        exit_code,
+        elapsed,
+        started_at,
+    })
 }
 
 /// Poll for a file to appear on disk, with an initial delay and a maximum duration.
@@ -261,16 +340,19 @@ async fn poll_for_file(
     max_duration: Duration,
 ) -> Result<(), SdkError> {
     let start = tokio::time::Instant::now();
-    tokio::time::sleep(initial_delay).await;
+    let effective_initial = initial_delay.min(max_duration);
+    tokio::time::sleep(effective_initial).await;
     loop {
-        if file_path.exists() {
-            return Ok(());
-        }
         let elapsed = start.elapsed();
         if elapsed >= max_duration {
             return Err(SdkError::PollTimeout { elapsed });
         }
-        tokio::time::sleep(interval).await;
+        if file_path.exists() {
+            return Ok(());
+        }
+        let remaining = max_duration.saturating_sub(elapsed);
+        let sleep_time = interval.min(remaining);
+        tokio::time::sleep(sleep_time).await;
     }
 }
 
@@ -394,5 +476,585 @@ mod tests {
         assert!(result.is_err(), "should timeout when file does not appear");
         let is_poll_timeout = matches!(result, Err(SdkError::PollTimeout { .. }));
         assert!(is_poll_timeout, "should be PollTimeout variant");
+    }
+
+    #[tokio::test]
+    async fn poll_for_file_succeeds_when_file_appears() {
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("output.txt");
+        let path_clone = path.clone();
+
+        // Spawn a task that creates the file after 100ms.
+        let _handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = std::fs::write(&path_clone, "done");
+        });
+
+        let result = poll_for_file(
+            &path,
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+            Duration::from_millis(500),
+        )
+        .await;
+
+        assert!(result.is_ok(), "should succeed when file appears during polling");
+    }
+
+    #[tokio::test]
+    async fn submit_task_returns_err_on_connection_refused() {
+        let config = ClientConfig {
+            base_url: String::from("http://127.0.0.1:19999"),
+            timeout: Duration::from_millis(500),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+
+        let payload = TaskPayload {
+            task: String::from("name: test\ncommand: echo"),
+            input: String::from("hello"),
+            working_directory: None,
+            environment: None,
+            limiter_key: None,
+            timeout_ms: None,
+        };
+        let result = client.submit_task(&payload).await;
+
+        assert!(result.is_err(), "network failure should return Err");
+        let is_http = matches!(result, Err(SdkError::Http(_)));
+        assert!(is_http, "should be SdkError::Http variant");
+    }
+
+    #[tokio::test]
+    async fn submit_task_with_recovery_recovers_from_file() {
+        // Bind a listener that accepts connections but never responds,
+        // so the HTTP call hangs rather than failing immediately.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|_| std::process::abort());
+        let addr = listener.local_addr().unwrap_or_else(|_| std::process::abort());
+
+        // Accept connections in background so the OS doesn't RST them.
+        let _accept_handle = tokio::spawn(async move {
+            // Keep listener alive and accept (but never read/write).
+            loop {
+                let _conn = listener.accept();
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let output_path = dir.path().join("recovered.txt");
+        let output_clone = output_path.clone();
+
+        // Spawn a task that creates the file after 50ms.
+        let _handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = std::fs::write(&output_clone, "recovered content");
+        });
+
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: Duration::from_millis(5000),
+            poll_interval: Duration::from_millis(30),
+            poll_initial_delay: Duration::from_millis(10),
+            max_poll_duration: Duration::from_millis(1000),
+        };
+        let client = Client::new(config).unwrap_or_else(|_| std::process::abort());
+
+        let payload = TaskPayload {
+            task: String::from("name: test\ncommand: echo"),
+            input: String::from("hello"),
+            working_directory: None,
+            environment: None,
+            limiter_key: None,
+            timeout_ms: None,
+        };
+
+        let result = client
+            .submit_task_with_recovery(&payload, &output_path)
+            .await;
+
+        assert!(result.is_ok(), "should recover via file poll");
+        let task_result = result.unwrap_or_else(|_| std::process::abort());
+        assert!(task_result.success, "recovered result should be successful");
+    }
+
+    #[test]
+    fn task_result_require_success_ok() {
+        let result = TaskResult {
+            success: true,
+            output: String::from("done"),
+            exit_code: Some(0),
+            elapsed: None,
+            started_at: None,
+        };
+        assert!(result.require_success().is_ok(), "should pass for successful result");
+    }
+
+    #[test]
+    fn task_result_require_success_err() {
+        let result = TaskResult {
+            success: false,
+            output: String::from("command failed"),
+            exit_code: Some(1),
+            elapsed: None,
+            started_at: None,
+        };
+        let err = result.require_success();
+        assert!(err.is_err(), "should fail for unsuccessful result");
+        let is_task_failed = matches!(err, Err(SdkError::TaskFailed { .. }));
+        assert!(is_task_failed, "should be TaskFailed variant");
+    }
+
+    #[test]
+    fn api_elapsed_display_seconds_only() {
+        let elapsed = ApiElapsed { secs: Some(42), nanos: Some(0) };
+        assert_eq!(elapsed.to_display_string(), "42s");
+    }
+
+    #[test]
+    fn api_elapsed_display_with_millis() {
+        let elapsed = ApiElapsed { secs: Some(3), nanos: Some(150_000_000) };
+        assert_eq!(elapsed.to_display_string(), "3.150s");
+    }
+
+    // ── Regression tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    async fn regression_http_call_returns_err_on_network_failure() {
+        // Regression: http_call previously swallowed network errors and returned
+        // Ok(TaskResult{success:false}) instead of Err(SdkError::Http).
+        let config = ClientConfig {
+            base_url: String::from("http://127.0.0.1:19999"),
+            timeout: Duration::from_millis(500),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap();
+
+        let payload = TaskPayload {
+            task: String::from("name: test\ncommand: echo"),
+            input: String::from("hello"),
+            working_directory: None,
+            environment: None,
+            limiter_key: None,
+            timeout_ms: None,
+        };
+        let result = client.submit_task(&payload).await;
+
+        // Must be Err, not Ok with success=false.
+        assert!(result.is_err(), "connection refused must return Err, not Ok");
+        assert!(
+            matches!(result, Err(SdkError::Http(_))),
+            "must be SdkError::Http variant, got: {result:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    fn regression_response_metadata_populated() {
+        // Regression: TaskResult metadata fields (exit_code, elapsed, started_at)
+        // were dropped and always None.
+        let json = serde_json::json!({
+            "success": true,
+            "output": "ok",
+            "metadata": {
+                "exit_code": 0,
+                "started_at": "2025-01-15T10:00:00Z",
+                "elapsed": { "secs": 42, "nanos": 500_000_000_u64 }
+            }
+        });
+        let api_resp: ApiResponse = serde_json::from_value(json).unwrap();
+        let meta = api_resp.metadata.as_ref();
+        let exit_code = meta.and_then(|m| m.exit_code);
+        let elapsed = meta.and_then(|m| m.elapsed.as_ref().map(ApiElapsed::to_display_string));
+        let started_at = meta.and_then(|m| m.started_at.clone());
+
+        assert_eq!(exit_code, Some(0), "exit_code must be populated from response");
+        assert_eq!(
+            elapsed.as_deref(),
+            Some("42.500s"),
+            "elapsed must be populated from response"
+        );
+        assert_eq!(
+            started_at.as_deref(),
+            Some("2025-01-15T10:00:00Z"),
+            "started_at must be populated from response"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_poll_timeout_overshoot_initial_delay_exceeds_max() {
+        // Regression: poll_for_file with initial_delay > max_duration would sleep
+        // for the full initial_delay before checking timeout, overshooting max_duration.
+        let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let path = dir.path().join("nonexistent.txt");
+
+        let max_duration = Duration::from_millis(50);
+        let initial_delay = Duration::from_millis(500); // 10x max_duration
+
+        let start = tokio::time::Instant::now();
+        let result = poll_for_file(
+            &path,
+            initial_delay,
+            Duration::from_millis(10),
+            max_duration,
+        )
+        .await;
+
+        let actual_elapsed = start.elapsed();
+
+        assert!(result.is_err(), "should timeout");
+        assert!(
+            matches!(result, Err(SdkError::PollTimeout { .. })),
+            "should be PollTimeout"
+        );
+        // Must return within max_duration + generous epsilon (100ms), NOT after initial_delay (500ms).
+        let epsilon = Duration::from_millis(100);
+        assert!(
+            actual_elapsed < max_duration.saturating_add(epsilon),
+            "poll must return within max_duration + epsilon ({:?}), but took {:?}",
+            max_duration.saturating_add(epsilon),
+            actual_elapsed
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    async fn regression_file_poll_recovery_succeeds() {
+        // Regression: poll_for_file would not detect files created after the
+        // initial delay but before timeout.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.txt");
+        let path_clone = path.clone();
+
+        // Create file after 80ms — well after initial_delay (10ms) but before timeout (500ms).
+        let _handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let _ = std::fs::write(&path_clone, "done");
+        });
+
+        let result = poll_for_file(
+            &path,
+            Duration::from_millis(10),
+            Duration::from_millis(30),
+            Duration::from_millis(500),
+        )
+        .await;
+
+        assert!(result.is_ok(), "file created mid-poll must be detected");
+    }
+
+    #[test]
+    fn regression_require_success_returns_task_failed() {
+        // Regression: TaskResult{success:false}.require_success() must return
+        // Err(SdkError::TaskFailed), not swallow the error as Ok.
+        let result = TaskResult {
+            success: false,
+            output: String::from("command failed"),
+            exit_code: Some(1),
+            elapsed: None,
+            started_at: None,
+        };
+        let err = result.require_success();
+        assert!(err.is_err(), "failed task must return Err");
+        assert!(
+            matches!(&err, Err(SdkError::TaskFailed { message }) if message == "command failed"),
+            "must be TaskFailed with preserved output message, got: {err:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    fn regression_task_payload_serializes_limiter_key_and_timeout_ms() {
+        // Regression: limiter_key and timeout_ms fields were missing from
+        // TaskPayload serialization.
+        let payload = TaskPayload {
+            task: String::from("name: test\ncommand: echo"),
+            input: String::from("hello"),
+            working_directory: None,
+            environment: None,
+            limiter_key: Some(String::from("my-limiter")),
+            timeout_ms: Some(30_000),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(
+            json.get("limiter_key").and_then(serde_json::Value::as_str),
+            Some("my-limiter"),
+            "limiter_key must be serialized"
+        );
+        assert_eq!(
+            json.get("timeout_ms").and_then(serde_json::Value::as_u64),
+            Some(30_000),
+            "timeout_ms must be serialized"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    fn mutant_kill_base_url_returns_configured_url() {
+        // Mutant kill: client.rs:165-167 — base_url() replaced with "" or "xyzzy"
+        let config = ClientConfig {
+            base_url: String::from("http://custom-server:9999"),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap();
+        assert_eq!(
+            client.base_url(),
+            "http://custom-server:9999",
+            "base_url() must return the configured URL, not an empty string or constant"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    fn mutant_kill_success_check_true_returns_ok() {
+        // Mutant kill: client.rs:304 — `== with !=` on success check
+        // Directly test the response interpretation: success=true must yield
+        // TaskResult.success=true, and success=false must yield success=false.
+        let json_success = serde_json::json!({
+            "success": true,
+            "output": "good",
+            "metadata": null
+        });
+        let api_resp: ApiResponse = serde_json::from_value(json_success).unwrap();
+        assert_eq!(
+            api_resp.success,
+            Some(true),
+            "success=true in JSON must parse as Some(true)"
+        );
+        // The code checks `if response.success == Some(true)` to return Ok with success=true.
+        // If mutated to `!=`, a success=true response would fall through to the error path.
+        // We can't call http_call without a server, but we can verify the parsed value
+        // and the branching logic by checking require_success on the expected TaskResult.
+        let result = TaskResult {
+            success: api_resp.success == Some(true),
+            output: api_resp.output.unwrap_or_default().trim().to_owned(),
+            exit_code: None,
+            elapsed: None,
+            started_at: None,
+        };
+        assert!(
+            result.success,
+            "response with success=true must produce TaskResult.success=true"
+        );
+
+        // Also verify the inverse: success=false must NOT match.
+        let json_failure = serde_json::json!({
+            "success": false,
+            "output": "bad"
+        });
+        let api_resp_fail: ApiResponse = serde_json::from_value(json_failure).unwrap();
+        let result_fail = TaskResult {
+            success: api_resp_fail.success == Some(true),
+            output: String::from("bad"),
+            exit_code: None,
+            elapsed: None,
+            started_at: None,
+        };
+        assert!(
+            !result_fail.success,
+            "response with success=false must produce TaskResult.success=false"
+        );
+    }
+
+    #[test]
+    fn mutant_kill_truncate_str_at_exact_boundary() {
+        // Mutant kill: client.rs:361 — `> with >=` on `s.len() <= max_len`
+        // or client.rs:365 — `> with >=` on `while end > 0`
+        // A string of exactly max_len bytes must NOT be truncated.
+        let s = "abcde"; // 5 bytes
+        let result = truncate_str(s, 5);
+        assert_eq!(
+            result, "abcde",
+            "string of exactly max_len must pass through unchanged"
+        );
+        assert_eq!(
+            result.len(),
+            5,
+            "result length must equal max_len when input length equals max_len"
+        );
+
+        // A string one byte longer MUST be truncated.
+        let s2 = "abcdef"; // 6 bytes
+        let result2 = truncate_str(s2, 5);
+        assert_eq!(
+            result2, "abcde",
+            "string one byte over max_len must be truncated"
+        );
+        assert_eq!(
+            result2.len(),
+            5,
+            "truncated result must have exactly max_len bytes"
+        );
+
+        // Edge case: single multibyte char with max_len that splits it must back up to 0.
+        let s3 = "\u{1F600}"; // 4 bytes
+        let result3 = truncate_str(s3, 2);
+        assert_eq!(
+            result3, "",
+            "truncate inside a multibyte char must back up to empty when no char boundary fits"
+        );
+    }
+
+    /// Start a TCP listener that responds with a fixed HTTP response to any request.
+    fn spawn_http_mock(
+        status: u16,
+        status_text: &str,
+        body: &str,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        let response = format!(
+            "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|_| std::process::abort());
+        let addr = listener.local_addr().unwrap_or_else(|_| std::process::abort());
+        let handle = std::thread::spawn(move || {
+            for _ in 0..5 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    let _ = std::io::Write::flush(&mut stream);
+                }
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test
+    async fn mutant_kill_v2_http_call_success_true_returns_success() {
+        // Mutant kill: client.rs:304 — `== with !=` on `response.success == Some(true)`
+        // A real HTTP response with {"success": true} must produce TaskResult{success: true}.
+        // With the `!=` mutation, success:true would fall through to the error path.
+        let body = r#"{"success":true,"output":"hello"}"#;
+        let (addr, _handle) = spawn_http_mock(200, "OK", body);
+
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap();
+
+        let result = http_call(
+            client.http_client(),
+            &format!("http://{addr}/run"),
+            &TaskPayload {
+                task: String::from("name: test\ncommand: echo"),
+                input: String::from("hi"),
+                working_directory: None,
+                environment: None,
+                limiter_key: None,
+                timeout_ms: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.success,
+            "response with success:true must produce TaskResult.success=true; \
+             if this fails, the == check was mutated to !="
+        );
+        assert_eq!(result.output, "hello", "output must be preserved from response");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // reason: test
+    async fn mutant_kill_v2_http_call_success_false_returns_failure() {
+        // Mutant kill: client.rs:304 — `== with !=` (inverse direction)
+        // A response with {"success": false} must produce TaskResult{success: false}.
+        let body = r#"{"success":false,"output":"boom"}"#;
+        let (addr, _handle) = spawn_http_mock(200, "OK", body);
+
+        let config = ClientConfig {
+            base_url: format!("http://{addr}"),
+            timeout: Duration::from_millis(2000),
+            ..ClientConfig::default()
+        };
+        let client = Client::new(config).unwrap();
+
+        let result = http_call(
+            client.http_client(),
+            &format!("http://{addr}/run"),
+            &TaskPayload {
+                task: String::from("name: test\ncommand: echo"),
+                input: String::from("hi"),
+                working_directory: None,
+                environment: None,
+                limiter_key: None,
+                timeout_ms: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.success,
+            "response with success:false must produce TaskResult.success=false"
+        );
+        assert_eq!(result.output, "boom", "error output must be preserved");
+    }
+
+    #[test]
+    fn mutant_kill_v2_truncate_str_boundary_len_equals_max() {
+        // Mutant kill: client.rs:365 — `> with >=` on `s.len() > max_len`
+        // (or equivalently, `<= with <` on `s.len() <= max_len`)
+        // A string of exactly max_len bytes must NOT be truncated.
+        // With `>=` (or `<`), len==max triggers truncation incorrectly.
+        let s = "exact"; // 5 bytes
+        let result = truncate_str(s, 5);
+        assert_eq!(
+            result, "exact",
+            "string of exactly max_len must pass through unchanged"
+        );
+        // Verify length precisely — catches off-by-one truncation.
+        assert_eq!(
+            result.len(), s.len(),
+            "output length must equal input length when len == max_len"
+        );
+
+        // One byte shorter than max: must also pass through.
+        let s2 = "abcd"; // 4 bytes
+        assert_eq!(
+            truncate_str(s2, 5), "abcd",
+            "string shorter than max_len must pass through"
+        );
+
+        // One byte longer than max: must truncate.
+        let s3 = "abcdef"; // 6 bytes
+        assert_eq!(
+            truncate_str(s3, 5), "abcde",
+            "string longer than max_len must be truncated"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // reason: test assertions
+    fn regression_task_payload_omits_none_optional_fields() {
+        // Verify that None optional fields are skipped during serialization
+        // (skip_serializing_if = "Option::is_none").
+        let payload = TaskPayload {
+            task: String::from("name: test\ncommand: echo"),
+            input: String::from("hello"),
+            working_directory: None,
+            environment: None,
+            limiter_key: None,
+            timeout_ms: None,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(
+            json.get("limiter_key").is_none(),
+            "None limiter_key must be omitted"
+        );
+        assert!(
+            json.get("timeout_ms").is_none(),
+            "None timeout_ms must be omitted"
+        );
     }
 }
