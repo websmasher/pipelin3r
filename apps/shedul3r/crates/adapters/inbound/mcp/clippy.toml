@@ -1,0 +1,88 @@
+# =============================================================================
+# clippy.toml -- Guardrails for the api crate (inbound HTTP adapter)
+# =============================================================================
+# Reference: docs/rust-setup/04-guardrails-clippy-toml.md
+#
+# Composition root: Axum handlers + main.rs. This is the ONLY crate that wires
+# concrete adapters to abstract ports. LazyLock/OnceLock are permitted here
+# for tracing initialization and other startup-only state.
+#
+# clippy.toml does not support inheritance -- this file is self-contained.
+#
+# Cargo.toml must include:
+#   disallowed_methods = "deny"
+#   disallowed_types = "deny"
+
+# =============================================================================
+# THRESHOLDS (same as workspace)
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS (workspace bans only -- composition root)
+# =============================================================================
+
+disallowed-methods = [
+    # -- Environment variable access --
+    # Note: main.rs uses #[allow(clippy::disallowed_methods)] for env reads.
+    # All other files in the api crate must not read env vars directly.
+    { path = "std::env::var", reason = "Only main.rs may read env vars (with #[allow]) -- all other code receives config via function parameters" },
+    { path = "std::env::var_os", reason = "Only main.rs may read env vars (with #[allow]) -- all other code receives config via function parameters" },
+    { path = "std::env::vars", reason = "Only main.rs may read env vars (with #[allow]) -- all other code receives config via function parameters" },
+
+    # -- Environment variable mutation --
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -- Process control --
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result from main) -- process::exit skips destructors" },
+    { path = "std::process::Command::new", reason = "Shell execution not permitted in this service" },
+
+    # -- Blocking sleep --
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep for async context -- std::thread::sleep blocks the tokio runtime" },
+
+    # -- Filesystem operations --
+    { path = "std::fs::read_to_string", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::read", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::read_dir", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::read_link", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::write", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::remove_file", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::remove_dir_all", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::create_dir_all", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::rename", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::copy", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::metadata", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::symlink_metadata", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::canonicalize", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::set_permissions", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+    { path = "std::fs::hard_link", reason = "Server is a stateless HTTP adapter -- no direct filesystem access" },
+
+    # -- HTTP client construction --
+    { path = "reqwest::Client::new", reason = "Use shared client from AppState -- per-request construction skips connection pooling" },
+    { path = "reqwest::Client::builder", reason = "Use shared client from AppState -- construct once at startup and inject via DI" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES (workspace bans only -- NO global state bans)
+# =============================================================================
+# The server crate is the composition root. LazyLock and OnceLock are permitted
+# here for tracing subscriber setup, regex caches, and other startup-only state.
+
+disallowed-types = [
+    # -- Collections --
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -- Synchronization --
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -- Filesystem --
+    { path = "std::fs::File", reason = "Server is a stateless HTTP adapter -- no direct file handle construction" },
+]

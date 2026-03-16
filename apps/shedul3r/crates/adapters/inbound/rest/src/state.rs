@@ -41,8 +41,8 @@ pub type BundleStore = Arc<RwLock<BTreeMap<String, BundleEntry>>>;
 
 /// Shared state injected into all HTTP handlers via `web::Data<Arc<AppState>>`.
 pub struct AppState {
-    /// The task execution engine with all adapters wired.
-    pub engine: ConcreteEngine,
+    /// The task execution engine with all adapters wired (shared with MCP transport).
+    pub engine: Arc<ConcreteEngine>,
     /// In-memory bundle storage for uploaded file bundles.
     pub bundles: BundleStore,
 }
@@ -73,7 +73,7 @@ pub fn build_app_state() -> Arc<AppState> {
     );
 
     Arc::new(AppState {
-        engine,
+        engine: Arc::new(engine),
         bundles: Arc::new(RwLock::new(BTreeMap::new())),
     })
 }

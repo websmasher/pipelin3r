@@ -6,6 +6,7 @@ use std::sync::Arc;
 use actix_web::web;
 use actix_web::{App, HttpResponse, HttpServer};
 use clap::Parser;
+use tokio_util::sync::CancellationToken;
 
 use rest::auth::ApiKeyAuth;
 use rest::cli::Cli;
@@ -66,6 +67,25 @@ async fn serve(port_override: Option<u16>) {
     let addr = format!("0.0.0.0:{port}");
 
     let state = build_app_state();
+
+    // Start MCP transport on a separate port (REST port + 1).
+    let mcp_port = port
+        .parse::<u16>()
+        .unwrap_or(7943)
+        .checked_add(1)
+        .unwrap_or(7944);
+    let mcp_addr = format!("0.0.0.0:{mcp_port}");
+    let mcp_engine = Arc::clone(&state.engine);
+    let cancellation_token = CancellationToken::new();
+    let _mcp_handle = tokio::spawn({
+        let addr = mcp_addr.clone();
+        let token = cancellation_token.clone();
+        async move {
+            if let Err(e) = mcp::service::serve_mcp(mcp_engine, &addr, token).await {
+                tracing::error!("MCP transport error: {e}");
+            }
+        }
+    });
 
     // Optional API key authentication: if SHEDUL3R_API_KEY is set, require
     // Bearer token on protected routes only.

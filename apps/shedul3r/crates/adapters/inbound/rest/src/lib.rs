@@ -8,7 +8,9 @@ pub(crate) mod handlers;
 pub mod state;
 
 // Used by the [[bin]] target (main.rs), not by lib code directly.
+use mcp as _;
 use tokio as _;
+use tokio_util as _;
 use tracing_subscriber as _;
 
 pub use error::AppError;

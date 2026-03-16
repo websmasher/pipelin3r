@@ -6,6 +6,7 @@ members = [
     "crates/adapters/outbound/db",
     "crates/adapters/outbound/subprocess",
     "crates/adapters/inbound/rest",
+    "crates/adapters/inbound/mcp",
 ]
 resolver = "2"
 
@@ -119,6 +120,10 @@ parking_lot = "0.12"
 serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+rmcp = { version = "1.2", features = ["server", "macros", "transport-streamable-http-server"] }
+axum = "0.8"
+tokio-util = { version = "0.7", features = ["rt"] }
+schemars = "1"
 
 [profile.release]
 opt-level = 3
