@@ -1,7 +1,7 @@
 [package]
-name = "api"
+name = "rest"
 version.workspace = true
-description = "Inbound adapter — Axum HTTP API and CLI (composition root)"
+description = "Inbound adapter — actix-web HTTP API and CLI (composition root)"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
@@ -14,7 +14,9 @@ name = "shedul3r"
 path = "src/main.rs"
 
 [dependencies]
-axum.workspace = true
+actix-web.workspace = true
+actix-multipart.workspace = true
+futures-core.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 tempfile.workspace = true
@@ -28,9 +30,6 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tokio-util.workspace = true
-tower-http.workspace = true
 
 [dev-dependencies]
-http-body-util.workspace = true
-tower.workspace = true
+actix-rt.workspace = true

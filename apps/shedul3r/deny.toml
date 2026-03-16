@@ -47,8 +47,8 @@ deny = [
     # error responses, type-erased errors prevent matching on variants.
     { name = "anyhow", wrappers = [] },
 
-    # --- Web framework: standardize on axum ---
-    { name = "actix-web", wrappers = [] },
+    # --- Web framework: standardize on actix-web ---
+    { name = "axum", wrappers = [] },
     { name = "rocket", wrappers = [] },
     { name = "warp", wrappers = [] },
     { name = "poem", wrappers = [] },

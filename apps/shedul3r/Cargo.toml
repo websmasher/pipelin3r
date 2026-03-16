@@ -5,7 +5,7 @@ members = [
     "crates/app/commands",
     "crates/adapters/outbound/db",
     "crates/adapters/outbound/subprocess",
-    "crates/adapters/inbound/api",
+    "crates/adapters/inbound/rest",
 ]
 resolver = "2"
 
@@ -103,23 +103,22 @@ multiple_crate_versions = "allow"        # Defer to deny.toml for duplicate vers
 
 [workspace.dependencies]
 # Shared dependency versions — all crates inherit these via `dep.workspace = true`
-axum = { version = "0.8", features = ["multipart"] }
+actix-web = "4"
+actix-multipart = "0.7"
+actix-rt = "2"
+futures-core = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time", "fs", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio-util = { version = "0.7", features = ["io"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tower-http = { version = "0.6", features = ["catch-panic", "cors", "trace", "timeout"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 trait-variant = "0.1"
 parking_lot = "0.12"
 serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
-http-body-util = "0.1"
 tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 opt-level = 3

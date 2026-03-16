@@ -10,15 +10,14 @@
 //!   A TTL-based reaper should be added in a future iteration.
 
 use std::path::Component;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use axum::Router;
-use axum::body::Body;
-use axum::extract::{Multipart, Path, State};
-use axum::http::StatusCode;
-use axum::http::header;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use actix_multipart::Multipart;
+use actix_web::HttpResponse;
+use actix_web::http::StatusCode;
+use actix_web::web;
+use futures_core::Stream;
 
 use crate::AppError;
 use crate::state::AppState;
@@ -56,19 +55,35 @@ fn validate_bundle_path(name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Builds an Axum router with all bundle-related endpoints.
-pub fn bundle_router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/api/bundles", post(upload))
-        .route("/api/bundles/{id}/files/{*path}", get(download))
-        .route("/api/bundles/{id}", delete(delete_bundle))
+/// Registers all bundle-related routes on the given service config.
+pub fn configure_bundle_routes(cfg: &mut web::ServiceConfig) {
+    #[allow(clippy::literal_string_with_formatting_args)] // actix-web route pattern, not a format string
+    let _: &mut web::ServiceConfig = cfg
+        .service(
+            web::resource("/api/bundles").route(web::post().to(upload)),
+        )
+        .service(
+            web::resource("/api/bundles/{id}/files/{path:.*}").route(web::get().to(download)),
+        )
+        .service(
+            web::resource("/api/bundles/{id}").route(web::delete().to(delete_bundle)),
+        );
+}
+
+/// Poll the next item from a pinned stream.
+async fn stream_next<S, T>(stream: &mut Pin<&mut S>) -> Option<T>
+where
+    S: Stream<Item = T>,
+{
+    std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await
 }
 
 /// Accept a multipart upload, write files to a temp directory, return the bundle ID.
+#[allow(clippy::future_not_send)] // actix-web Multipart/Field are !Send by design (single-threaded workers)
 async fn upload(
-    State(state): State<Arc<AppState>>,
-    mut multipart: Multipart,
-) -> Result<Response, AppError> {
+    state: web::Data<Arc<AppState>>,
+    multipart: Multipart,
+) -> Result<HttpResponse, AppError> {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| AppError::Internal(format!("failed to create temp dir: {e}")))?;
 
@@ -76,11 +91,12 @@ async fn upload(
     let mut file_count: usize = 0;
     let mut total_size: u64 = 0;
 
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("multipart read error: {e}")))?
-    {
+    let mut multipart = std::pin::pin!(multipart);
+
+    while let Some(field_result) = stream_next(&mut multipart.as_mut()).await {
+        let field = field_result
+            .map_err(|e| AppError::BadRequest(format!("multipart read error: {e}")))?;
+
         file_count = file_count.checked_add(1).ok_or_else(|| {
             AppError::BadRequest("file count overflow".to_owned())
         })?;
@@ -113,11 +129,10 @@ async fn upload(
             .map_err(|e| AppError::Internal(format!("failed to create file: {e}")))?;
         let mut file_size: u64 = 0;
 
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|e| AppError::BadRequest(format!("failed to read field chunk: {e}")))?
-        {
+        let mut field_pinned = std::pin::pin!(field);
+        while let Some(chunk_result) = stream_next(&mut field_pinned.as_mut()).await {
+            let chunk = chunk_result
+                .map_err(|e| AppError::BadRequest(format!("failed to read field chunk: {e}")))?;
             let chunk_len =
                 u64::try_from(chunk.len()).unwrap_or(u64::MAX);
             file_size = file_size.saturating_add(chunk_len);
@@ -153,7 +168,7 @@ async fn upload(
         "path": bundle_path,
     });
 
-    Ok((StatusCode::OK, axum::Json(body)).into_response())
+    Ok(HttpResponse::Ok().json(body))
 }
 
 /// Path parameters for the file download endpoint.
@@ -167,26 +182,26 @@ struct DownloadParams {
 
 /// Download a single file from a bundle by its relative path.
 async fn download(
-    State(state): State<Arc<AppState>>,
-    Path(params): Path<DownloadParams>,
-) -> Result<Response, AppError> {
-    let file_path = params.path;
-    let id = params.id;
+    state: web::Data<Arc<AppState>>,
+    params: web::Path<DownloadParams>,
+) -> Result<HttpResponse, AppError> {
+    let file_path = &params.path;
+    let id = &params.id;
 
     // Validate the path: only normal components allowed (no `..`, `/`, `\`, etc.).
-    validate_bundle_path(&file_path)?;
+    validate_bundle_path(file_path)?;
 
     let bundle_base = state
         .bundles
         .read()
-        .get(&id)
+        .get(id)
         .ok_or_else(|| AppError::NotFound(format!("bundle not found: {id}")))?
         .path
         .clone();
 
-    let full_path = bundle_base.join(&file_path);
+    let full_path = bundle_base.join(file_path);
 
-    let file = tokio::fs::File::open(&full_path).await.map_err(|e| {
+    let content = tokio::fs::read(&full_path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             AppError::NotFound(format!("file not found: {file_path}"))
         } else {
@@ -194,47 +209,45 @@ async fn download(
         }
     })?;
 
-    let stream = tokio_util::io::ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        body,
-    )
-        .into_response())
+    Ok(HttpResponse::Ok()
+        .content_type("application/octet-stream")
+        .body(content))
 }
 
 /// Delete a bundle and clean up its temp directory.
 async fn delete_bundle(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let removed = state.bundles.write().remove(&id);
+    state: web::Data<Arc<AppState>>,
+    id: web::Path<String>,
+) -> Result<HttpResponse, AppError> {
+    let removed = state.bundles.write().remove(id.as_str());
 
     if removed.is_none() {
         return Err(AppError::NotFound(format!("bundle not found: {id}")));
     }
 
     // The BundleEntry is dropped here, which drops the TempDir and cleans up.
-    Ok(StatusCode::NO_CONTENT.into_response())
+    Ok(HttpResponse::build(StatusCode::NO_CONTENT).finish())
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // reason: test assertions
 mod tests {
-    use axum::body::Body;
-    use axum::http::Request;
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
+    use actix_web::{App, test, web};
 
     use crate::state::build_app_state;
 
-    use super::bundle_router;
+    use super::configure_bundle_routes;
 
-    /// Build a test app with just the bundle routes.
-    fn test_app() -> axum::Router {
-        let state = build_app_state();
-        bundle_router().with_state(state)
+    macro_rules! test_app {
+        () => {{
+            let state = build_app_state();
+            test::init_service(
+                App::new()
+                    .app_data(web::Data::new(state))
+                    .configure(configure_bundle_routes),
+            )
+            .await
+        }};
     }
 
     /// Multipart request: content-type header + body bytes.
@@ -266,35 +279,24 @@ mod tests {
         MultipartRequest { content_type, body }
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn upload_then_download() {
-        let app = test_app();
+        let app = test_app!();
 
         let file_content = b"hello world";
         let mp = multipart_body("test.txt", file_content);
 
         // Upload
-        let upload_req = Request::builder()
-            .method("POST")
+        let upload_req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let upload_resp = app
-            .clone()
-            .oneshot(upload_req)
-            .await
-            .unwrap_or_default();
-
+        let upload_resp = test::call_service(&app, upload_req).await;
         assert_eq!(upload_resp.status(), 200, "upload should succeed");
 
-        let upload_body = upload_resp
-            .into_body()
-            .collect()
-            .await
-            .unwrap_or_default()
-            .to_bytes();
+        let upload_body = test::read_body(upload_resp).await;
         let upload_json: serde_json::Value =
             serde_json::from_slice(&upload_body).unwrap_or_default();
 
@@ -305,25 +307,14 @@ mod tests {
         assert!(!bundle_id.is_empty(), "bundle id should be non-empty");
 
         // Download
-        let download_req = Request::builder()
-            .method("GET")
-            .uri(format!("/api/bundles/{bundle_id}/files/test.txt"))
-            .body(Body::empty())
-            .unwrap_or_default();
+        let download_req = test::TestRequest::get()
+            .uri(&format!("/api/bundles/{bundle_id}/files/test.txt"))
+            .to_request();
 
-        let download_resp = app
-            .oneshot(download_req)
-            .await
-            .unwrap_or_default();
-
+        let download_resp = test::call_service(&app, download_req).await;
         assert_eq!(download_resp.status(), 200, "download should succeed");
 
-        let download_body = download_resp
-            .into_body()
-            .collect()
-            .await
-            .unwrap_or_default()
-            .to_bytes();
+        let download_body = test::read_body(download_resp).await;
         assert_eq!(
             download_body.as_ref(),
             file_content,
@@ -331,34 +322,23 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn upload_then_delete() {
-        let app = test_app();
+        let app = test_app!();
 
         let mp = multipart_body("data.bin", b"binary data");
 
         // Upload
-        let upload_req = Request::builder()
-            .method("POST")
+        let upload_req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let upload_resp = app
-            .clone()
-            .oneshot(upload_req)
-            .await
-            .unwrap_or_default();
-
+        let upload_resp = test::call_service(&app, upload_req).await;
         assert_eq!(upload_resp.status(), 200, "upload should succeed");
 
-        let upload_body = upload_resp
-            .into_body()
-            .collect()
-            .await
-            .unwrap_or_default()
-            .to_bytes();
+        let upload_body = test::read_body(upload_resp).await;
         let upload_json: serde_json::Value =
             serde_json::from_slice(&upload_body).unwrap_or_default();
 
@@ -368,18 +348,11 @@ mod tests {
             .unwrap_or_default();
 
         // Delete
-        let delete_req = Request::builder()
-            .method("DELETE")
-            .uri(format!("/api/bundles/{bundle_id}"))
-            .body(Body::empty())
-            .unwrap_or_default();
+        let delete_req = test::TestRequest::delete()
+            .uri(&format!("/api/bundles/{bundle_id}"))
+            .to_request();
 
-        let delete_resp = app
-            .clone()
-            .oneshot(delete_req)
-            .await
-            .unwrap_or_default();
-
+        let delete_resp = test::call_service(&app, delete_req).await;
         assert_eq!(
             delete_resp.status(),
             204,
@@ -387,17 +360,11 @@ mod tests {
         );
 
         // Verify bundle is gone — download should 404.
-        let download_req = Request::builder()
-            .method("GET")
-            .uri(format!("/api/bundles/{bundle_id}/files/data.bin"))
-            .body(Body::empty())
-            .unwrap_or_default();
+        let download_req = test::TestRequest::get()
+            .uri(&format!("/api/bundles/{bundle_id}/files/data.bin"))
+            .to_request();
 
-        let download_resp = app
-            .oneshot(download_req)
-            .await
-            .unwrap_or_default();
-
+        let download_resp = test::call_service(&app, download_req).await;
         assert_eq!(
             download_resp.status(),
             404,
@@ -405,100 +372,86 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn upload_rejects_absolute_path() {
-        let app = test_app();
+        let app = test_app!();
 
         let mp = multipart_body("/etc/passwd", b"pwned");
 
-        let req = Request::builder()
-            .method("POST")
+        let req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let resp = app.oneshot(req).await.unwrap_or_default();
+        let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 400, "absolute path should be rejected");
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn upload_rejects_parent_traversal() {
-        let app = test_app();
+        let app = test_app!();
 
         let mp = multipart_body("../etc/passwd", b"pwned");
 
-        let req = Request::builder()
-            .method("POST")
+        let req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let resp = app.oneshot(req).await.unwrap_or_default();
+        let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 400, "parent traversal should be rejected");
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn upload_rejects_mixed_traversal() {
-        let app = test_app();
+        let app = test_app!();
 
         let mp = multipart_body("foo/../bar", b"pwned");
 
-        let req = Request::builder()
-            .method("POST")
+        let req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let resp = app.oneshot(req).await.unwrap_or_default();
+        let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 400, "mixed traversal should be rejected");
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn upload_accepts_nested_path() {
-        let app = test_app();
+        let app = test_app!();
 
         let mp = multipart_body("src/lib.rs", b"fn main() {}");
 
-        let req = Request::builder()
-            .method("POST")
+        let req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let resp = app.oneshot(req).await.unwrap_or_default();
+        let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 200, "nested normal path should be accepted");
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn download_rejects_traversal() {
-        let app = test_app();
+        let app = test_app!();
 
         // First upload a valid file so the bundle exists.
         let mp = multipart_body("test.txt", b"hello");
 
-        let upload_req = Request::builder()
-            .method("POST")
+        let upload_req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let upload_resp = app
-            .clone()
-            .oneshot(upload_req)
-            .await
-            .unwrap_or_default();
+        let upload_resp = test::call_service(&app, upload_req).await;
 
-        let upload_body = upload_resp
-            .into_body()
-            .collect()
-            .await
-            .unwrap_or_default()
-            .to_bytes();
+        let upload_body = test::read_body(upload_resp).await;
         let upload_json: serde_json::Value =
             serde_json::from_slice(&upload_body).unwrap_or_default();
         let bundle_id = upload_json
@@ -507,15 +460,13 @@ mod tests {
             .unwrap_or_default();
 
         // Attempt to download with path traversal.
-        let download_req = Request::builder()
-            .method("GET")
-            .uri(format!(
+        let download_req = test::TestRequest::get()
+            .uri(&format!(
                 "/api/bundles/{bundle_id}/files/../../../etc/passwd"
             ))
-            .body(Body::empty())
-            .unwrap_or_default();
+            .to_request();
 
-        let download_resp = app.oneshot(download_req).await.unwrap_or_default();
+        let download_resp = test::call_service(&app, download_req).await;
         assert_eq!(
             download_resp.status(),
             400,
@@ -523,24 +474,23 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn regression_upload_rejects_oversized_field() {
         // Regression: there was no body size limit. A field exceeding 10MB
         // must return 400.
-        let app = test_app();
+        let app = test_app!();
 
         // Create a field just over 10MB
         let content = vec![0u8; 10_000_001];
         let mp = multipart_body("big.bin", &content);
 
-        let req = Request::builder()
-            .method("POST")
+        let req = test::TestRequest::post()
             .uri("/api/bundles")
-            .header("content-type", &mp.content_type)
-            .body(Body::from(mp.body))
-            .unwrap_or_default();
+            .insert_header(("content-type", mp.content_type.as_str()))
+            .set_payload(mp.body)
+            .to_request();
 
-        let resp = app.oneshot(req).await.unwrap_or_default();
+        let resp = test::call_service(&app, req).await;
         assert_eq!(
             resp.status(),
             400,
@@ -548,18 +498,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[actix_rt::test]
     async fn delete_nonexistent_returns_404() {
-        let app = test_app();
+        let app = test_app!();
 
-        let req = Request::builder()
-            .method("DELETE")
+        let req = test::TestRequest::delete()
             .uri("/api/bundles/nonexistent-id")
-            .body(Body::empty())
-            .unwrap_or_default();
+            .to_request();
 
-        let resp = app.oneshot(req).await.unwrap_or_default();
-
+        let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 404, "deleting missing bundle should 404");
     }
 }

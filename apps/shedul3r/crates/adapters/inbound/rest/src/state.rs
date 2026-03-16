@@ -1,4 +1,4 @@
-//! Shared application state for Axum handlers.
+//! Shared application state for HTTP handlers.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -39,7 +39,7 @@ impl BundleEntry {
 /// Thread-safe in-memory store mapping bundle IDs to their temp directories.
 pub type BundleStore = Arc<RwLock<BTreeMap<String, BundleEntry>>>;
 
-/// Shared state injected into all Axum handlers via `State<Arc<AppState>>`.
+/// Shared state injected into all HTTP handlers via `web::Data<Arc<AppState>>`.
 pub struct AppState {
     /// The task execution engine with all adapters wired.
     pub engine: ConcreteEngine,

@@ -1,6 +1,5 @@
-use axum::Json;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use actix_web::HttpResponse;
+use actix_web::http::StatusCode;
 
 /// Classified error enum mapping all application errors to HTTP status codes.
 ///
@@ -21,15 +20,34 @@ pub enum AppError {
     External(String),
 }
 
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, "bad_request", msg.clone()),
-            Self::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg.clone()),
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadRequest(msg) => write!(f, "bad request: {msg}"),
+            Self::NotFound(msg) => write!(f, "not found: {msg}"),
+            Self::Internal(msg) => write!(f, "internal error: {msg}"),
+            Self::External(msg) => write!(f, "external error: {msg}"),
+        }
+    }
+}
+
+impl actix_web::error::ResponseError for AppError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::External(_) => StatusCode::BAD_GATEWAY,
+        }
+    }
+
+    fn error_response(&self) -> HttpResponse {
+        let (code, message) = match self {
+            Self::BadRequest(msg) => ("bad_request", msg.clone()),
+            Self::NotFound(msg) => ("not_found", msg.clone()),
             Self::Internal(msg) => {
                 tracing::error!(error = %msg, "internal error");
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",
                     "An internal error occurred".to_owned(),
                 )
@@ -37,14 +55,13 @@ impl IntoResponse for AppError {
             Self::External(msg) => {
                 tracing::error!(error = %msg, "external service error");
                 (
-                    StatusCode::BAD_GATEWAY,
                     "external_error",
                     "An external service error occurred".to_owned(),
                 )
             }
         };
         let body = serde_json::json!({ "error": code, "message": message });
-        (status, Json(body)).into_response()
+        HttpResponse::build(self.status_code()).json(body)
     }
 }
 

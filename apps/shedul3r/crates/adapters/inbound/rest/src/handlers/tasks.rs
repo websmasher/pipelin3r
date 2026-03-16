@@ -7,22 +7,25 @@
 
 use std::sync::Arc;
 
-use axum::Json;
-use axum::Router;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use actix_web::HttpResponse;
+use actix_web::http::StatusCode;
+use actix_web::web;
 use domain_types::SchedulrError;
 
 use crate::state::AppState;
 
-/// Builds an Axum router with all task-related endpoints.
-pub fn task_router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/api/tasks", post(execute_task))
-        .route("/api/tasks/status", get(scheduler_status))
-        .route("/api/tasks/limiter-status", get(limiter_status))
+/// Registers all task-related routes on the given service config.
+pub fn configure_task_routes(cfg: &mut web::ServiceConfig) {
+    let _: &mut web::ServiceConfig = cfg
+        .service(
+            web::resource("/api/tasks").route(web::post().to(execute_task)),
+        )
+        .service(
+            web::resource("/api/tasks/status").route(web::get().to(scheduler_status)),
+        )
+        .service(
+            web::resource("/api/tasks/limiter-status").route(web::get().to(limiter_status)),
+        );
 }
 
 /// Execute a task and return the result.
@@ -30,20 +33,21 @@ pub fn task_router() -> Router<Arc<AppState>> {
 /// Returns HTTP 200 for successful execution (even if the subprocess fails),
 /// or HTTP 400 if the task definition cannot be parsed.
 async fn execute_task(
-    State(state): State<Arc<AppState>>,
-    crate::ValidatedJson(request): crate::ValidatedJson<domain_types::TaskRequest>,
-) -> Response {
+    state: web::Data<Arc<AppState>>,
+    request: crate::ValidatedJson<domain_types::TaskRequest>,
+) -> HttpResponse {
+    let crate::ValidatedJson(request) = request;
     match state.engine.execute(request).await {
         Ok(response) => {
             let body = serde_json::to_value(&response).unwrap_or_default();
-            (StatusCode::OK, Json(body)).into_response()
+            HttpResponse::Ok().json(body)
         }
         Err(SchedulrError::TaskDefinition(msg)) => {
             let body = serde_json::json!({
                 "error": "task_not_found",
                 "message": msg,
             });
-            (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            HttpResponse::build(StatusCode::BAD_REQUEST).json(body)
         }
         Err(other) => {
             tracing::error!(error = %other, "task execution error");
@@ -51,19 +55,19 @@ async fn execute_task(
                 "error": "internal_error",
                 "message": "An internal error occurred",
             });
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+            HttpResponse::build(StatusCode::INTERNAL_SERVER_ERROR).json(body)
         }
     }
 }
 
 /// Return the current scheduler status.
-async fn scheduler_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn scheduler_status(state: web::Data<Arc<AppState>>) -> HttpResponse {
     let status = state.engine.status();
-    Json(serde_json::to_value(&status).unwrap_or_default())
+    HttpResponse::Ok().json(serde_json::to_value(&status).unwrap_or_default())
 }
 
 /// Return per-key limiter statuses.
-async fn limiter_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn limiter_status(state: web::Data<Arc<AppState>>) -> HttpResponse {
     let statuses = state.engine.limiter_status();
-    Json(serde_json::to_value(&statuses).unwrap_or_default())
+    HttpResponse::Ok().json(serde_json::to_value(&statuses).unwrap_or_default())
 }
