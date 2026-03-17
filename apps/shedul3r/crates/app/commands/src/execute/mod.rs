@@ -287,6 +287,40 @@ where
     }
 }
 
+/// Maximum bytes of subprocess stdout included in the response.
+///
+/// Claude Code sessions can produce megabytes of conversation log on stdout.
+/// Including all of that in the JSON response causes OOM under load and
+/// HTTP decode failures on the client. The response carries only the tail
+/// of stdout — enough for debugging — while the real work product lives
+/// in files the agent wrote to the work directory.
+const MAX_OUTPUT_BYTES: usize = 32_768; // 32 KB
+
+/// Truncate a string to at most `max_bytes`, keeping the tail.
+///
+/// If truncation occurs, prepends `[truncated {original_len} bytes, showing last {max_bytes}]\n`.
+/// Always cuts on a char boundary.
+fn truncate_output(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return String::from(s);
+    }
+
+    let start = s.len().saturating_sub(max_bytes);
+    // Walk forward to the next char boundary.
+    let mut boundary = start;
+    while boundary < s.len() && !s.is_char_boundary(boundary) {
+        boundary = boundary.saturating_add(1);
+    }
+
+    let tail = s.get(boundary..).unwrap_or("");
+    format!(
+        "[truncated {} bytes, showing last {}]\n{}",
+        s.len(),
+        tail.len(),
+        tail
+    )
+}
+
 /// Build a [`TaskResponse`] from a subprocess result.
 fn build_task_response(
     result: SubprocessResult,
@@ -296,7 +330,7 @@ fn build_task_response(
     if result.exit_code == 0 {
         TaskResponse {
             success: true,
-            output: result.stdout,
+            output: truncate_output(&result.stdout, MAX_OUTPUT_BYTES),
             metadata: ExecutionMetadata {
                 started_at,
                 elapsed,
@@ -304,9 +338,10 @@ fn build_task_response(
             },
         }
     } else {
+        let raw = format!("Exit {}: {}", result.exit_code, result.stderr);
         TaskResponse {
             success: false,
-            output: format!("Exit {}: {}", result.exit_code, result.stderr),
+            output: truncate_output(&raw, MAX_OUTPUT_BYTES),
             metadata: ExecutionMetadata {
                 started_at,
                 elapsed,

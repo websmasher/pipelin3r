@@ -244,3 +244,56 @@ async fn normal_completion_releases_bulkhead_permit() {
         "semaphore should have 1 permit available after normal completion"
     );
 }
+
+// ── truncate_output tests ─────────────────────────────────────────
+
+#[test]
+fn truncate_output_short_passthrough() {
+    let s = "hello world";
+    let result = truncate_output(s, 100);
+    assert_eq!(result, "hello world", "short strings pass through unchanged");
+}
+
+#[test]
+fn truncate_output_exact_boundary() {
+    let s = "abcde";
+    let result = truncate_output(s, 5);
+    assert_eq!(result, "abcde", "string at exact limit passes through");
+}
+
+#[test]
+fn truncate_output_keeps_tail() {
+    let s = "abcdefghij";
+    let result = truncate_output(s, 5);
+    assert!(
+        result.contains("fghij"),
+        "should keep the tail: {result}"
+    );
+    assert!(
+        result.contains("[truncated"),
+        "should have truncation header: {result}"
+    );
+}
+
+#[test]
+fn truncate_output_multibyte_boundary() {
+    // "é" is 2 bytes in UTF-8. If we cut mid-char, we should advance to next boundary.
+    let s = "aaéébb";
+    let result = truncate_output(s, 4);
+    // The tail should be valid UTF-8 and contain "bb" at minimum.
+    assert!(
+        result.contains("bb"),
+        "should contain the end: {result}"
+    );
+}
+
+#[test]
+fn truncate_output_large_input() {
+    let s = "x".repeat(100_000);
+    let result = truncate_output(&s, MAX_OUTPUT_BYTES);
+    assert!(
+        result.len() <= MAX_OUTPUT_BYTES.saturating_add(100), // header adds ~60 chars
+        "result should be bounded: {} bytes",
+        result.len()
+    );
+}
