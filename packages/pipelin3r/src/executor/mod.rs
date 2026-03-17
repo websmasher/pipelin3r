@@ -5,12 +5,11 @@ use std::path::PathBuf;
 
 use shedul3r_rs_sdk::{Client, ClientConfig};
 
-use crate::agent::AgentBuilder;
-use crate::auth::Auth;
-use crate::command::CommandBuilder;
+use crate::agent::{AgentConfig, AgentResult};
+use crate::auth::{Auth, merge_env};
 use crate::error::PipelineError;
 use crate::model::{ModelConfig, Provider};
-use crate::transform::TransformBuilder;
+use crate::task::{TaskConfig, build_task_yaml};
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
 #[allow(
@@ -24,6 +23,8 @@ pub struct Executor {
     default_provider: Option<Provider>,
     model_config: ModelConfig,
     dry_run: Option<std::sync::Mutex<DryRunConfig>>,
+    /// Auto-forwarded env vars (`CLAUDE_ACCOUNT`, `CLAUDE_CONFIG_DIR`).
+    auto_env: BTreeMap<String, String>,
 }
 
 /// Configuration for dry-run capture mode.
@@ -34,6 +35,23 @@ pub(crate) struct DryRunConfig {
     pub counters: BTreeMap<String, usize>,
 }
 
+/// Capture `CLAUDE_ACCOUNT` and `CLAUDE_CONFIG_DIR` from the current
+/// process environment at executor construction time.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "executor init: auto-forwarding Claude env vars is core functionality"
+)]
+fn capture_claude_env() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if let Ok(account) = std::env::var("CLAUDE_ACCOUNT") {
+        let _ = env.insert(String::from("CLAUDE_ACCOUNT"), account);
+    }
+    if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let _ = env.insert(String::from("CLAUDE_CONFIG_DIR"), config_dir);
+    }
+    env
+}
+
 impl Executor {
     /// Create a new executor with the given SDK client configuration.
     ///
@@ -42,6 +60,7 @@ impl Executor {
     pub fn new(config: &ClientConfig) -> Result<Self, PipelineError> {
         let base_url = config.base_url.clone();
         let client = Client::new(config.clone())?;
+        let auto_env = capture_claude_env();
         Ok(Self {
             client,
             base_url,
@@ -49,6 +68,7 @@ impl Executor {
             default_provider: None,
             model_config: ModelConfig::default_config(),
             dry_run: None,
+            auto_env,
         })
     }
 
@@ -99,19 +119,105 @@ impl Executor {
         self
     }
 
-    /// Create an agent builder for a named agent.
-    pub fn agent(&self, name: &str) -> AgentBuilder<'_> {
-        AgentBuilder::new(self, name)
+    /// Execute a single agent task.
+    ///
+    /// Handles: task YAML generation, auth/env merging, work-dir transport
+    /// (local path or remote bundle upload/download), dry-run capture,
+    /// and expected output verification.
+    ///
+    /// # Errors
+    /// Returns an error if validation, YAML building, or execution fails.
+    pub async fn run_agent(&self, config: &AgentConfig) -> Result<AgentResult, PipelineError> {
+        use crate::agent::{
+            execute_dry_run_capture, execute_with_work_dir, format_duration, validate_work_dir,
+        };
+
+        // Validate work_dir before any work happens.
+        if let Some(ref dir) = config.work_dir {
+            validate_work_dir(dir)?;
+        }
+
+        let model_str = self.resolve_model_string(config);
+        let timeout_str = config.execution_timeout.map(format_duration);
+
+        // Build tools string from Vec<String>.
+        let tools_str = config.tools.as_ref().map(|tools| {
+            tools
+                .iter()
+                .enumerate()
+                .fold(String::new(), |mut acc, (i, t)| {
+                    if i > 0 {
+                        acc.push(',');
+                    }
+                    acc.push_str(t);
+                    acc
+                })
+        });
+
+        // Build retry fields for task YAML.
+        let max_retries = config.retry.as_ref().map(|r| r.max_retries);
+        let retry_initial_delay = config
+            .retry
+            .as_ref()
+            .map(|r| format_duration(r.initial_delay));
+        let retry_backoff = config.retry.as_ref().map(|r| r.backoff_multiplier);
+        let retry_max_delay = config.retry.as_ref().map(|r| format_duration(r.max_delay));
+
+        let task_yaml = build_task_yaml(&TaskConfig {
+            name: config.name.clone(),
+            model: model_str,
+            timeout: timeout_str,
+            provider_id: config.provider_id.clone(),
+            max_concurrent: config.max_concurrent,
+            max_wait: config.max_wait.map(format_duration),
+            max_retries,
+            allowed_tools: tools_str,
+            retry_initial_delay,
+            retry_backoff_multiplier: retry_backoff,
+            retry_max_delay,
+        })?;
+
+        // Resolve auth: config override > executor default > empty.
+        let auth = config.auth.as_ref().or(self.default_auth.as_ref());
+        let auth_env = auth.map(Auth::to_env).transpose()?.unwrap_or_default();
+
+        // Merge envs: auto_env (base) + auth_env + config.env (highest priority).
+        let mut merged = self.auto_env.clone();
+        for (k, v) in &auth_env {
+            let _ = merged.insert(k.clone(), v.clone());
+        }
+        let env = merge_env(merged, config.env.as_ref());
+
+        // Dry-run: capture to disk.
+        if let Some(dry_run_mutex) = self.dry_run_config() {
+            return execute_dry_run_capture(
+                dry_run_mutex,
+                &task_yaml,
+                &config.prompt,
+                config.work_dir.as_deref(),
+                env.as_ref(),
+            );
+        }
+
+        // Execute via the work-dir transport helper.
+        execute_with_work_dir(
+            self.sdk_client(),
+            !self.is_local(),
+            &task_yaml,
+            &config.prompt,
+            config.work_dir.as_deref(),
+            &config.expect_outputs,
+            env,
+        )
+        .await
     }
 
-    /// Create a command builder for the given program.
-    pub fn command(&self, program: &str) -> CommandBuilder {
-        CommandBuilder::new(program)
-    }
-
-    /// Create a transform builder for the given step name.
-    pub fn transform(&self, name: &str) -> TransformBuilder {
-        TransformBuilder::new(name)
+    /// Resolve the model string for task YAML.
+    fn resolve_model_string(&self, config: &AgentConfig) -> Option<String> {
+        config.model.as_ref().map(|m| {
+            let provider = self.default_provider.clone().unwrap_or_default();
+            self.model_config.resolve(m, &provider)
+        })
     }
 
     /// Get a reference to the underlying SDK client.
@@ -119,19 +225,16 @@ impl Executor {
         &self.client
     }
 
-    /// Get the default auth, if set.
-    pub(crate) const fn default_auth(&self) -> Option<&Auth> {
-        self.default_auth.as_ref()
-    }
-
     /// Get the default provider, if set.
+    #[cfg(test)]
     pub(crate) const fn default_provider(&self) -> Option<&Provider> {
         self.default_provider.as_ref()
     }
 
-    /// Get the model configuration.
-    pub(crate) const fn model_config(&self) -> &ModelConfig {
-        &self.model_config
+    /// Get the auto-forwarded environment variables.
+    #[cfg(test)]
+    pub(crate) const fn auto_env(&self) -> &BTreeMap<String, String> {
+        &self.auto_env
     }
 
     /// Get the dry-run config mutex, if dry-run is enabled.

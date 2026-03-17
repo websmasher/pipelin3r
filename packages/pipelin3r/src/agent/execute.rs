@@ -1,18 +1,17 @@
 //! Execution helpers for agent invocations: dry-run capture, work-dir
-//! transport, single-task dispatch, and duration formatting.
+//! transport, and duration formatting.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use shedul3r_rs_sdk::TaskPayload;
 
-use super::{AgentResult, AgentTask, BatchConfig};
-use crate::auth::{EnvironmentMap, merge_env};
+use super::AgentResult;
+use crate::auth::EnvironmentMap;
 use crate::bundle::validate_path;
 use crate::error::PipelineError;
 use crate::executor::extract_step_name;
-use crate::task::{TaskConfig, build_task_yaml};
 
 /// Validate that a work directory path is safe and well-formed.
 ///
@@ -21,7 +20,7 @@ use crate::task::{TaskConfig, build_task_yaml};
 ///
 /// # Errors
 /// Returns `PipelineError::Config` if the path fails any check.
-pub(super) fn validate_work_dir(path: &Path) -> Result<(), PipelineError> {
+pub fn validate_work_dir(path: &Path) -> Result<(), PipelineError> {
     if path.as_os_str().is_empty() {
         return Err(PipelineError::Config(String::from(
             "work_dir must not be empty",
@@ -61,35 +60,12 @@ pub(super) fn validate_work_dir(path: &Path) -> Result<(), PipelineError> {
     Ok(())
 }
 
-/// Count how many results succeeded vs failed.
-#[allow(
-    clippy::type_complexity,
-    reason = "generic function: type parameterization is intentional"
-)]
-pub(super) fn count_batch_outcomes<T, E>(results: &[Result<T, E>]) -> (usize, usize) {
-    let mut succeeded: usize = 0;
-    let mut failed: usize = 0;
-    for r in results {
-        if r.is_ok() {
-            succeeded = succeeded.saturating_add(1);
-        } else {
-            failed = failed.saturating_add(1);
-        }
-    }
-    (succeeded, failed)
-}
-
-/// Returns `true` when a batch has both successes and failures (partial failure).
-pub(super) const fn is_partial_failure(succeeded: usize, failed: usize) -> bool {
-    failed > 0 && succeeded > 0
-}
-
 /// Write a dry-run capture for a single invocation.
 #[allow(
     clippy::disallowed_types,
     reason = "published library: avoiding parking_lot dependency to minimize dependency tree"
 )]
-pub(super) fn execute_dry_run_capture(
+pub fn execute_dry_run_capture(
     dry_run_mutex: &std::sync::Mutex<crate::executor::DryRunConfig>,
     task_yaml: &str,
     prompt: &str,
@@ -139,6 +115,7 @@ pub(super) fn execute_dry_run_capture(
     Ok(AgentResult {
         success: true,
         output: String::from("(dry-run)"),
+        output_files: BTreeMap::new(),
     })
 }
 
@@ -199,55 +176,6 @@ fn collect_relative_paths_inner(
     Ok(())
 }
 
-/// Write a dry-run capture for a batch task.
-#[allow(
-    clippy::disallowed_types,
-    reason = "published library: avoiding parking_lot dependency to minimize dependency tree"
-)]
-pub(super) fn execute_batch_task_dry_run(
-    task: &AgentTask,
-    config: &BatchConfig,
-    dry_run_mutex: &std::sync::Mutex<crate::executor::DryRunConfig>,
-) -> Result<AgentResult, PipelineError> {
-    // Validate work_dir before any work happens (matches real-mode behavior).
-    if let Some(ref dir) = task.work_dir {
-        validate_work_dir(dir)?;
-    }
-
-    let prompt = task
-        .prompt
-        .as_ref()
-        .ok_or_else(|| PipelineError::Config(String::from("agent task prompt is required")))?;
-
-    let task_yaml = build_task_yaml(&TaskConfig {
-        name: config.name.clone(),
-        model: config.model.clone(),
-        timeout: config.timeout.clone(),
-        provider_id: None,
-        max_concurrent: None,
-        max_wait: None,
-        max_retries: None,
-        allowed_tools: config.tools.clone(),
-    })?;
-
-    // Resolve auth for meta: task override > batch default.
-    let auth_env = if let Some(ref auth) = task.auth {
-        Some(auth.to_env()?)
-    } else if config.default_auth_env.is_empty() {
-        None
-    } else {
-        Some(config.default_auth_env.clone())
-    };
-
-    execute_dry_run_capture(
-        dry_run_mutex,
-        &task_yaml,
-        prompt,
-        task.work_dir.as_deref(),
-        auth_env.as_ref(),
-    )
-}
-
 /// Execute a task with work-dir transport: auto-detect local vs remote.
 ///
 /// **Local** (shared filesystem): passes the work-dir path directly to the
@@ -257,8 +185,15 @@ pub(super) fn execute_batch_task_dry_run(
 /// **Remote**: reads all files from the work-dir, uploads them as a bundle,
 /// passes the bundle's remote path as `working_directory`, then downloads
 /// `expected_outputs` back into the local work-dir and cleans up the bundle.
-#[allow(clippy::too_many_arguments)] // reason: flat param list avoids an intermediate struct for a private helper
-pub(super) async fn execute_with_work_dir(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "flat param list avoids an intermediate struct for a private helper"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "work-dir transport has sequential phases that are clearer kept together"
+)]
+pub async fn execute_with_work_dir(
     client: &shedul3r_rs_sdk::Client,
     remote: bool,
     task_yaml: &str,
@@ -329,9 +264,31 @@ pub(super) async fn execute_with_work_dir(
             }
         }
 
+        // Read expected output files into a map.
+        let mut output_files = BTreeMap::new();
+        if let Some(dir) = work_dir {
+            for output_path in expected_outputs {
+                let local_path = dir.join(output_path);
+                if local_path.is_file() {
+                    match crate::fs::read_to_string(&local_path) {
+                        Ok(content) => {
+                            let _ = output_files.insert(output_path.clone(), content);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "expected output file {} could not be read: {e}",
+                                local_path.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         Ok::<AgentResult, PipelineError>(AgentResult {
             success: result.success,
             output: result.output,
+            output_files,
         })
     }
     .await;
@@ -411,57 +368,8 @@ fn read_dir_to_memory_inner(
     Ok(())
 }
 
-/// Execute a single task via the SDK client, with work-dir transport.
-pub(super) async fn execute_single_task(
-    task: &AgentTask,
-    config: &BatchConfig,
-    client: &shedul3r_rs_sdk::Client,
-) -> Result<AgentResult, PipelineError> {
-    // Validate work_dir before any work happens.
-    if let Some(ref dir) = task.work_dir {
-        validate_work_dir(dir)?;
-    }
-
-    let prompt = task
-        .prompt
-        .as_ref()
-        .ok_or_else(|| PipelineError::Config(String::from("agent task prompt is required")))?;
-
-    let task_yaml = build_task_yaml(&TaskConfig {
-        name: config.name.clone(),
-        model: config.model.clone(),
-        timeout: config.timeout.clone(),
-        provider_id: None,
-        max_concurrent: None,
-        max_wait: None,
-        max_retries: None,
-        allowed_tools: config.tools.clone(),
-    })?;
-
-    // Resolve auth: task override > batch default.
-    let auth_env = if let Some(ref auth) = task.auth {
-        auth.to_env()?
-    } else {
-        config.default_auth_env.clone()
-    };
-
-    let env = merge_env(auth_env, None);
-
-    // Execute via the work-dir transport helper.
-    execute_with_work_dir(
-        client,
-        !config.is_local,
-        &task_yaml,
-        prompt,
-        task.work_dir.as_deref(),
-        &task.expected_outputs,
-        env,
-    )
-    .await
-}
-
 /// Format a `Duration` as a human-readable timeout string for task YAML.
-pub(super) fn format_duration(d: Duration) -> String {
+pub fn format_duration(d: Duration) -> String {
     let total_secs = d.as_secs();
     let hours = total_secs.checked_div(3600).unwrap_or(0);
     let remaining = total_secs.saturating_sub(hours.saturating_mul(3600));

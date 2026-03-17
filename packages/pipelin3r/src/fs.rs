@@ -84,3 +84,16 @@ pub fn canonicalize(path: &Path) -> Result<std::path::PathBuf, std::io::Error> {
 pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir, std::io::Error> {
     std::fs::read_dir(path)
 }
+
+/// Recursively remove a directory and all its contents.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if the directory cannot be removed.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "centralized fs module: this IS the approved call site"
+)]
+pub fn remove_dir_all(path: &Path) -> Result<(), std::io::Error> {
+    std::fs::remove_dir_all(path)
+}

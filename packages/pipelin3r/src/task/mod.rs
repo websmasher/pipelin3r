@@ -6,14 +6,28 @@ use crate::error::PipelineError;
 
 /// Configuration for generating a task YAML definition.
 pub struct TaskConfig {
+    /// Task name.
     pub name: String,
+    /// Model identifier for the `--model` flag.
     pub model: Option<String>,
+    /// Timeout string (e.g., `"15m"`).
     pub timeout: Option<String>,
+    /// Provider/limiter key (e.g., `"claude"`).
     pub provider_id: Option<String>,
+    /// Maximum concurrent tasks for this provider key.
     pub max_concurrent: Option<usize>,
+    /// Maximum queue wait time string (e.g., `"2h"`).
     pub max_wait: Option<String>,
+    /// Maximum retry attempts.
     pub max_retries: Option<usize>,
+    /// Comma-separated allowed tools string.
     pub allowed_tools: Option<String>,
+    /// Initial retry delay string (e.g., `"5s"`).
+    pub retry_initial_delay: Option<String>,
+    /// Retry backoff multiplier.
+    pub retry_backoff_multiplier: Option<f64>,
+    /// Maximum retry delay string (e.g., `"30s"`).
+    pub retry_max_delay: Option<String>,
 }
 
 /// Build a task YAML string from the given configuration, applying defaults.
@@ -27,6 +41,9 @@ pub fn build_task_yaml(config: &TaskConfig) -> Result<String, PipelineError> {
     let max_concurrent = config.max_concurrent.unwrap_or(3);
     let max_wait = config.max_wait.as_deref().unwrap_or("2h");
     let max_retries = config.max_retries.unwrap_or(2);
+    let initial_delay = config.retry_initial_delay.as_deref().unwrap_or("5s");
+    let backoff_multiplier = config.retry_backoff_multiplier.unwrap_or(2.0);
+    let max_delay = config.retry_max_delay.as_deref().unwrap_or("30s");
 
     let mut command = format!(
         "claude -p --model {model} --setting-sources \"\" --permission-mode bypassPermissions"
@@ -53,11 +70,11 @@ pub fn build_task_yaml(config: &TaskConfig) -> Result<String, PipelineError> {
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
     writeln!(&mut out, "  max-retries: {max_retries}")
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
-    writeln!(&mut out, "  initial-delay: 5s")
+    writeln!(&mut out, "  initial-delay: {initial_delay}")
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
-    writeln!(&mut out, "  backoff-multiplier: 2.0")
+    writeln!(&mut out, "  backoff-multiplier: {backoff_multiplier}")
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
-    writeln!(&mut out, "  max-delay: 30s")
+    writeln!(&mut out, "  max-delay: {max_delay}")
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
 
     Ok(out)

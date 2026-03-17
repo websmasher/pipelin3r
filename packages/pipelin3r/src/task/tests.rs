@@ -13,6 +13,9 @@ fn golden_fixture_matches() {
         max_wait: None,
         max_retries: None,
         allowed_tools: Some(String::from("Read,Write")),
+        retry_initial_delay: None,
+        retry_backoff_multiplier: None,
+        retry_max_delay: None,
     };
 
     let expected = "\
@@ -25,7 +28,7 @@ max-wait: 2h
 retry:
   max-retries: 2
   initial-delay: 5s
-  backoff-multiplier: 2.0
+  backoff-multiplier: 2
   max-delay: 30s
 ";
 
@@ -44,6 +47,9 @@ fn custom_values_override_defaults() {
         max_wait: Some(String::from("1h")),
         max_retries: Some(0),
         allowed_tools: None,
+        retry_initial_delay: Some(String::from("10s")),
+        retry_backoff_multiplier: Some(3.0),
+        retry_max_delay: Some(String::from("1m")),
     };
 
     let result = build_task_yaml(&config).unwrap();
@@ -60,5 +66,17 @@ fn custom_values_override_defaults() {
     assert!(
         !result.contains("--allowedTools"),
         "should omit tools when None"
+    );
+    assert!(
+        result.contains("initial-delay: 10s"),
+        "should use custom initial delay"
+    );
+    assert!(
+        result.contains("backoff-multiplier: 3"),
+        "should use custom backoff multiplier"
+    );
+    assert!(
+        result.contains("max-delay: 1m"),
+        "should use custom max delay"
     );
 }

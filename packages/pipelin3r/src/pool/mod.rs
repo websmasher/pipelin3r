@@ -74,5 +74,80 @@ where
         .collect()
 }
 
+/// Execute an async function for each item with bounded concurrency, returning
+/// items paired with results.
+///
+/// The closure receives `(item, index, total)` and must return `(item, result)`.
+/// The item goes IN to the closure and comes BACK OUT paired with the result,
+/// solving the ownership problem without requiring `Clone`.
+///
+/// The `total` parameter is passed through to the closure and may differ from
+/// `items.len()` — e.g. when the caller filtered a larger set and wants
+/// progress to reflect the original count.
+///
+/// Results are returned in the original index order.
+///
+/// Individual task panics or cancellations are reported as
+/// [`PipelineError::Other`] in the corresponding result slot. Because a
+/// panicked task cannot return its `T`, those slots are omitted from the
+/// output and the length may be shorter than the input.
+pub async fn run_pool_map<T, F, Fut, R>(
+    items: Vec<T>,
+    concurrency: usize,
+    total: usize,
+    f: F,
+) -> Vec<(T, Result<R, PipelineError>)>
+where
+    T: Send + 'static,
+    F: Fn(T, usize, usize) -> Fut + Send + Sync + Clone + 'static,
+    Fut: std::future::Future<Output = (T, Result<R, PipelineError>)> + Send,
+    R: Send + 'static,
+{
+    let effective_concurrency = if concurrency == 0 { 1 } else { concurrency };
+    let semaphore = Arc::new(Semaphore::new(effective_concurrency));
+    let count = items.len();
+
+    // Pre-allocate result slots (indexed by original position for ordering)
+    #[allow(
+        clippy::type_complexity,
+        reason = "pool result collection: type is internal"
+    )]
+    let mut results: Vec<Option<(T, Result<R, PipelineError>)>> =
+        (0..count).map(|_| None).collect();
+    let mut join_set = JoinSet::new();
+
+    for (index, item) in items.into_iter().enumerate() {
+        let sem = Arc::clone(&semaphore);
+        let func = f.clone();
+
+        let _: tokio::task::AbortHandle = join_set.spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|e| PipelineError::Other(format!("semaphore closed: {e}")))?;
+            let (item_back, result) = func(item, index, total).await;
+            Ok::<(usize, T, Result<R, PipelineError>), PipelineError>((index, item_back, result))
+        });
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok(Ok((index, item_back, task_result))) => {
+                if let Some(slot) = results.get_mut(index) {
+                    *slot = Some((item_back, task_result));
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Pool map task semaphore error: {e}");
+            }
+            Err(join_error) => {
+                tracing::error!("Pool map task join error: {join_error}");
+            }
+        }
+    }
+
+    results.into_iter().flatten().collect()
+}
+
 #[cfg(test)]
 mod tests;

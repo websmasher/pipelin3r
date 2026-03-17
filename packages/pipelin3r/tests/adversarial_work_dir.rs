@@ -33,9 +33,9 @@ use tracing as _;
     reason = "test assertions on known-size collections"
 )]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
-    use pipelin3r::{AgentTask, Executor};
+    use pipelin3r::{AgentConfig, Executor};
 
     /// Helper: create an executor in dry-run mode.
     fn dry_run_executor(capture_dir: PathBuf) -> Executor {
@@ -56,12 +56,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("nonexistent-dir")
-            .prompt("test prompt")
-            .work_dir(&nonexistent)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(nonexistent),
+            ..AgentConfig::new("nonexistent-dir", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         assert!(
             result.is_err(),
@@ -85,12 +84,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("file-not-dir")
-            .prompt("test prompt")
-            .work_dir(&file_path)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(file_path),
+            ..AgentConfig::new("file-not-dir", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         assert!(
             result.is_err(),
@@ -127,12 +125,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("traversal-test")
-            .prompt("test prompt")
-            .work_dir(&traversal_path)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(traversal_path),
+            ..AgentConfig::new("traversal-test", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         assert!(
             result.is_err(),
@@ -166,12 +163,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("symlink-escape")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("symlink-escape", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         match result {
             Ok(r) => {
@@ -204,13 +200,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let empty_path = Path::new("");
-        let result = executor
-            .agent("empty-path")
-            .prompt("test prompt")
-            .work_dir(empty_path)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(PathBuf::from("")),
+            ..AgentConfig::new("empty-path", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         assert!(
             result.is_err(),
@@ -244,12 +238,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("no-read-perms")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work.clone()),
+            ..AgentConfig::new("no-read-perms", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         // Restore permissions before assertions (so cleanup works)
         std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -284,12 +277,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("no-write-perms")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work.clone()),
+            ..AgentConfig::new("no-write-perms", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         // Restore permissions
         std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -327,12 +319,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("special-chars")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("special-chars", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         match result {
             Ok(r) => {
@@ -375,12 +366,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("deep-nesting")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("deep-nesting", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         match result {
             Ok(r) => {
@@ -412,13 +402,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("hidden-files")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await
-            .unwrap();
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("hidden-files", "test prompt")
+        };
+        let result = executor.run_agent(&config).await.unwrap();
 
         assert!(result.success, "dry-run should succeed");
 
@@ -447,13 +435,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("empty-dir")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await
-            .unwrap();
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("empty-dir", "test prompt")
+        };
+        let result = executor.run_agent(&config).await.unwrap();
 
         assert!(result.success, "dry-run should succeed with empty work_dir");
 
@@ -484,13 +470,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("many-files")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await
-            .unwrap();
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("many-files", "test prompt")
+        };
+        let result = executor.run_agent(&config).await.unwrap();
 
         assert!(result.success, "dry-run should handle many files");
 
@@ -509,44 +493,8 @@ mod tests {
     }
 
     // ========================================================================
-    // CONCURRENCY EDGE CASES
+    // API EDGE CASES (batch tests removed — batch API replaced by run_pool_map)
     // ========================================================================
-
-    /// Test 13: Two batch tasks sharing the same work_dir.
-    /// Expected: validation rejects duplicate work_dir paths in a batch.
-    #[tokio::test]
-    async fn batch_tasks_sharing_work_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let capture_dir = dir.path().join("capture");
-        let work = dir.path().join("shared-work");
-        std::fs::create_dir_all(&work).unwrap();
-        std::fs::write(work.join("shared.txt"), b"shared content").unwrap();
-
-        let executor = dry_run_executor(capture_dir.clone());
-
-        let work_clone = work.clone();
-        let items = vec![1_u32, 2, 3];
-        let result = executor
-            .agent("shared-workdir")
-            .items(items, 3)
-            .for_each(move |item| {
-                AgentTask::new()
-                    .prompt(&format!("Process {item}"))
-                    .work_dir(&work_clone)
-            })
-            .execute()
-            .await;
-
-        assert!(
-            result.is_err(),
-            "duplicate work_dir in batch must be rejected"
-        );
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("duplicate work_dir"),
-            "error should mention duplicate work_dir, got: {msg}"
-        );
-    }
 
     /// Test 14: work_dir deleted before execution.
     /// Expected: validation rejects nonexistent paths.
@@ -563,12 +511,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("deleted-dir")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("deleted-dir", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         assert!(
             result.is_err(),
@@ -581,70 +528,19 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // API EDGE CASES
-    // ========================================================================
-
-    /// Test 15: Execute with no prompt AND no work_dir.
+    /// Test 15: Execute with empty prompt and no work_dir.
     #[tokio::test]
-    async fn execute_no_prompt_no_work_dir() {
+    async fn execute_empty_prompt_no_work_dir() {
         let dir = tempfile::tempdir().unwrap();
         let capture_dir = dir.path().join("capture");
         let executor = dry_run_executor(capture_dir);
 
-        let result = executor.agent("no-prompt-no-workdir").execute().await;
+        // AgentConfig always has a prompt (required field), but it can be empty.
+        let config = AgentConfig::new("empty-prompt-test", "");
+        let result = executor.run_agent(&config).await;
 
-        assert!(result.is_err(), "should fail when no prompt is set");
-        if let Err(e) = &result {
-            let msg = format!("{e}");
-            assert!(
-                msg.contains("prompt"),
-                "error should mention missing prompt, got: {msg}"
-            );
-        }
-    }
-
-    /// Test 16: Calling .work_dir() multiple times — last one wins?
-    #[tokio::test]
-    async fn work_dir_called_multiple_times() {
-        let dir = tempfile::tempdir().unwrap();
-        let capture_dir = dir.path().join("capture");
-
-        let work1 = dir.path().join("first-dir");
-        let work2 = dir.path().join("second-dir");
-        std::fs::create_dir_all(&work1).unwrap();
-        std::fs::create_dir_all(&work2).unwrap();
-        std::fs::write(work1.join("first.txt"), b"first").unwrap();
-        std::fs::write(work2.join("second.txt"), b"second").unwrap();
-
-        let executor = dry_run_executor(capture_dir.clone());
-
-        let result = executor
-            .agent("multi-workdir")
-            .prompt("test prompt")
-            .work_dir(&work1)
-            .work_dir(&work2)
-            .execute()
-            .await
-            .unwrap();
-
-        assert!(result.success, "dry-run should succeed");
-
-        let meta_path = capture_dir
-            .join("multi-workdir")
-            .join("0")
-            .join("meta.json");
-        let meta_content = std::fs::read_to_string(&meta_path).unwrap();
-
-        // Last call should win
-        assert!(
-            meta_content.contains("second.txt"),
-            "second work_dir's files should be listed (last wins)"
-        );
-        assert!(
-            !meta_content.contains("first.txt"),
-            "first work_dir's files should NOT be listed"
-        );
+        // Empty prompt is allowed — the agent subprocess receives empty stdin.
+        assert!(result.is_ok(), "empty prompt should not fail");
     }
 
     /// Test 17: expect_outputs with path traversal.
@@ -659,13 +555,15 @@ mod tests {
 
         // FINDING: expect_outputs paths are not validated for traversal.
         // In remote mode, this could be used to download arbitrary files.
-        let result = executor
-            .agent("traversal-outputs")
-            .prompt("test prompt")
-            .work_dir(&work)
-            .expect_outputs(&["../../../etc/passwd", "../../.env"])
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work),
+            expect_outputs: vec![
+                String::from("../../../etc/passwd"),
+                String::from("../../.env"),
+            ],
+            ..AgentConfig::new("traversal-outputs", "test prompt")
+        };
+        let result = executor.run_agent(&config).await;
 
         // In dry-run mode, expect_outputs are not used, so this succeeds.
         // But in real mode, dir.join("../../../etc/passwd") would escape.
@@ -683,12 +581,8 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let result = executor
-            .agent("prompt-only")
-            .prompt("just a prompt, no work dir")
-            .execute()
-            .await
-            .unwrap();
+        let config = AgentConfig::new("prompt-only", "just a prompt, no work dir");
+        let result = executor.run_agent(&config).await.unwrap();
 
         assert!(result.success, "prompt-only execution should work");
 
@@ -720,13 +614,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir.clone());
 
-        let _ = executor
-            .agent("meta-files")
-            .prompt("test")
-            .work_dir(&work)
-            .execute()
-            .await
-            .unwrap();
+        let config = AgentConfig {
+            work_dir: Some(work),
+            ..AgentConfig::new("meta-files", "test")
+        };
+        let _ = executor.run_agent(&config).await.unwrap();
 
         let meta_path = capture_dir.join("meta-files").join("0").join("meta.json");
         let meta_content = std::fs::read_to_string(&meta_path).unwrap();
@@ -750,12 +642,11 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir);
 
-        let result = executor
-            .agent("nonexistent-dry")
-            .prompt("test")
-            .work_dir(&nonexistent)
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(nonexistent),
+            ..AgentConfig::new("nonexistent-dry", "test")
+        };
+        let result = executor.run_agent(&config).await;
 
         // Should NOT panic. Returns a Config error for nonexistent path.
         assert!(
@@ -774,107 +665,42 @@ mod tests {
     // ========================================================================
 
     /// Test 21: URL with "localhost" in the path but not the host.
-    /// E.g., https://example.com/localhost — should NOT be detected as local.
     #[tokio::test]
     async fn url_with_localhost_in_path_not_host() {
-        // The is_local() method strips scheme and checks starts_with("localhost").
-        // A URL like https://example.com/api/localhost would strip to
-        // "example.com/api/localhost" — starts_with("localhost") is false. OK.
-        // But what about https://example.com:8080/localhost?
-        // Strips to "example.com:8080/localhost" — also fine.
-
-        // This test validates the behavior by constructing an executor with
-        // a URL that has localhost in the path.
         let config = shedul3r_rs_sdk::ClientConfig {
             base_url: String::from("https://example.com/api/localhost"),
             ..shedul3r_rs_sdk::ClientConfig::default()
         };
         let executor = Executor::new(&config).unwrap();
-
-        // is_local is pub(crate), so we can't call it directly from tests.
-        // Instead, we verify via dry-run behavior (dry-run bypasses local/remote).
-        // This test documents that the detection SHOULD work correctly for this case.
         let _ = executor;
     }
 
     /// Test 22: URL like http://localhost.evil.com should NOT be local.
-    /// This is a subdomain attack — `localhost.evil.com` resolves to the attacker.
     #[tokio::test]
     async fn url_localhost_evil_com_is_not_local() {
-        // is_local() uses is_local_host() which checks that "localhost" is followed
-        // by ':', '/', or end-of-string — so "localhost.evil.com" is correctly
-        // classified as remote. This test confirms the fix.
-
         let config = shedul3r_rs_sdk::ClientConfig {
             base_url: String::from("http://localhost.evil.com"),
             ..shedul3r_rs_sdk::ClientConfig::default()
         };
         let executor = Executor::new(&config).unwrap();
 
-        // We can verify this by checking that dry-run records the path
-        // (dry-run mode doesn't distinguish local vs remote, but documents the issue)
         let dir = tempfile::tempdir().unwrap();
         let capture_dir = dir.path().join("capture");
         let executor = executor.with_dry_run(capture_dir);
 
-        let result = executor
-            .agent("evil-localhost")
-            .prompt("test")
-            .execute()
-            .await
-            .unwrap();
+        let agent_config = AgentConfig::new("evil-localhost", "test");
+        let result = executor.run_agent(&agent_config).await.unwrap();
 
         assert!(result.success, "dry-run should succeed");
-        // The actual bug is in is_local() — it uses starts_with("localhost")
-        // without checking for a port separator or end of string.
     }
 
     // ========================================================================
     // ADDITIONAL EDGE CASES
     // ========================================================================
 
-    /// Test: AgentTask work_dir setting works correctly.
+    /// Test: expect_outputs with traversal paths in AgentConfig.
     #[tokio::test]
-    async fn agent_task_work_dir_setter() {
-        let dir = tempfile::tempdir().unwrap();
-        let capture_dir = dir.path().join("capture");
-        let work = dir.path().join("task-work");
-        std::fs::create_dir_all(&work).unwrap();
-        std::fs::write(work.join("task-file.txt"), b"task content").unwrap();
-
-        let executor = dry_run_executor(capture_dir.clone());
-
-        let items = vec![String::from("item1")];
-        let work_clone = work.clone();
-        let results = executor
-            .agent("task-workdir")
-            .items(items, 1)
-            .for_each(move |item| {
-                AgentTask::new()
-                    .prompt(&format!("Process {item}"))
-                    .work_dir(&work_clone)
-            })
-            .execute()
-            .await
-            .unwrap();
-
-        assert_eq!(results.len(), 1, "should have 1 result");
-        assert!(results[0].is_ok(), "should succeed");
-
-        let meta_path = capture_dir.join("task-workdir").join("0").join("meta.json");
-        let meta_content = std::fs::read_to_string(&meta_path).unwrap();
-        assert!(
-            meta_content.contains("task-file.txt"),
-            "should list files from task's work_dir"
-        );
-    }
-
-    /// Test: expect_outputs on AgentTask with traversal paths.
-    /// FINDING: expect_outputs paths are not validated at the API level.
-    /// They're stored as plain strings and used in path joins during
-    /// remote download: dir.join(output_path) — path traversal possible.
-    #[tokio::test]
-    async fn agent_task_expect_outputs_traversal() {
+    async fn agent_config_expect_outputs_traversal() {
         let dir = tempfile::tempdir().unwrap();
         let capture_dir = dir.path().join("capture");
         let work = dir.path().join("work");
@@ -882,17 +708,15 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir);
 
-        // These traversal paths are accepted without any validation.
-        // In real (non-dry-run) remote mode, the download step does:
-        //   let local_path = dir.join(output_path);
-        // which would resolve ../../../etc/passwd to an escape path.
-        let result = executor
-            .agent("traversal-outputs-task")
-            .prompt("test")
-            .work_dir(&work)
-            .expect_outputs(&["../../../etc/passwd", "../../.ssh/id_rsa"])
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work),
+            expect_outputs: vec![
+                String::from("../../../etc/passwd"),
+                String::from("../../.ssh/id_rsa"),
+            ],
+            ..AgentConfig::new("traversal-outputs-task", "test")
+        };
+        let result = executor.run_agent(&config).await;
 
         // Dry-run succeeds because expect_outputs aren't used in dry-run mode.
         assert!(
@@ -901,9 +725,7 @@ mod tests {
         );
     }
 
-    /// Test: Bundle validate_path rejects traversal, but expect_outputs doesn't use it.
-    /// FINDING: Bundle paths are validated via validate_path(), but download
-    /// paths (expect_outputs) are NOT validated. Inconsistent security boundary.
+    /// Test: Bundle validate_path rejects traversal, but expect_outputs doesn't use it in dry-run.
     #[tokio::test]
     async fn bundle_validates_but_expect_outputs_does_not() {
         let dir = tempfile::tempdir().unwrap();
@@ -913,14 +735,12 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir);
 
-        // Both safe and traversal paths are accepted without validation
-        let result = executor
-            .agent("mixed-outputs")
-            .prompt("test")
-            .work_dir(&work)
-            .expect_outputs(&["safe/path.txt", "../escape.txt"])
-            .execute()
-            .await;
+        let config = AgentConfig {
+            work_dir: Some(work),
+            expect_outputs: vec![String::from("safe/path.txt"), String::from("../escape.txt")],
+            ..AgentConfig::new("mixed-outputs", "test")
+        };
+        let result = executor.run_agent(&config).await;
 
         assert!(
             result.is_ok(),

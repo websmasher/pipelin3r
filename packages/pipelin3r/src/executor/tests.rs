@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
+use std::path::PathBuf;
+
 use super::*;
 
 #[test]
@@ -40,7 +42,6 @@ fn executor_with_defaults_succeeds() {
 
 #[test]
 fn mutant_kill_default_provider_returns_set_value() {
-    // Mutant kill: executor.rs:126 — default_provider() replaced with None
     let executor = Executor::with_defaults()
         .unwrap_or_else(|_| std::process::abort())
         .with_default_provider(Provider::OpenRouter);
@@ -200,4 +201,14 @@ fn executor_with_dry_run() {
         executor.dry_run_config().is_some(),
         "dry run should be enabled"
     );
+}
+
+#[test]
+fn auto_env_is_captured_at_construction() {
+    // auto_env should at least be a valid BTreeMap (may be empty
+    // depending on whether CLAUDE_ACCOUNT/CLAUDE_CONFIG_DIR are set
+    // in the test runner's environment).
+    let executor = Executor::with_defaults().unwrap_or_else(|_| std::process::abort());
+    // Just verify it's accessible and is a BTreeMap.
+    let _env = executor.auto_env();
 }

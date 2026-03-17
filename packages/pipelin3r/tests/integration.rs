@@ -17,7 +17,7 @@ use tracing as _;
 use std::path::Path;
 
 use pipelin3r::{
-    AgentTask, Auth, Executor, Model, TemplateFiller, TransformBuilder, TransformResult,
+    AgentConfig, Auth, Executor, Model, TemplateFiller, TransformBuilder, TransformResult,
 };
 
 /// Verify that a single agent dry-run creates the expected capture files.
@@ -40,13 +40,12 @@ async fn agent_dry_run_creates_capture_files() {
     std::fs::create_dir_all(&work_dir).unwrap();
     std::fs::write(work_dir.join("input.txt"), b"test input").unwrap();
 
-    let result = executor
-        .agent("test-step")
-        .prompt(&prompt_text)
-        .work_dir(&work_dir)
-        .execute()
-        .await
-        .unwrap();
+    let config = AgentConfig {
+        work_dir: Some(work_dir),
+        ..AgentConfig::new("test-step", &prompt_text)
+    };
+
+    let result = executor.run_agent(&config).await.unwrap();
 
     assert!(result.success, "dry-run agent should succeed");
 
@@ -74,68 +73,6 @@ async fn agent_dry_run_creates_capture_files() {
     assert!(
         meta_content.contains("input.txt"),
         "meta.json should list work dir files"
-    );
-}
-
-/// Verify that batch dry-run creates one capture directory per item.
-#[tokio::test]
-#[allow(clippy::unwrap_used)] // reason: integration test assertions
-async fn agent_batch_dry_run_creates_directories_per_item() {
-    let dir = tempfile::tempdir().unwrap();
-    let capture_dir = dir.path().to_path_buf();
-
-    let executor = Executor::with_defaults()
-        .unwrap()
-        .with_dry_run(capture_dir.clone());
-
-    let items: Vec<String> = vec![
-        String::from("alpha"),
-        String::from("beta"),
-        String::from("gamma"),
-    ];
-
-    let results = executor
-        .agent("batch-step")
-        .model(Model::Sonnet4_6)
-        .items(items, 2)
-        .for_each(|item| AgentTask::new().prompt(&format!("Process {item}")))
-        .execute()
-        .await
-        .unwrap();
-
-    assert_eq!(results.len(), 3, "should produce one result per item");
-    for (i, r) in results.iter().enumerate() {
-        assert!(r.is_ok(), "item {i} should succeed in dry-run");
-    }
-
-    // Verify 3 capture directories were created.
-    let step_dir = capture_dir.join("batch-step");
-    for idx in 0_u32..3 {
-        let item_dir = step_dir.join(idx.to_string());
-        assert_file_exists(
-            &item_dir.join("prompt.md"),
-            &format!("prompt.md for item {idx}"),
-        );
-        assert_file_exists(
-            &item_dir.join("task.yaml"),
-            &format!("task.yaml for item {idx}"),
-        );
-        assert_file_exists(
-            &item_dir.join("meta.json"),
-            &format!("meta.json for item {idx}"),
-        );
-    }
-
-    // Verify prompt content varies per item.
-    let prompt_0 = std::fs::read_to_string(step_dir.join("0").join("prompt.md")).unwrap();
-    let prompt_2 = std::fs::read_to_string(step_dir.join("2").join("prompt.md")).unwrap();
-    assert!(
-        prompt_0.contains("alpha"),
-        "first prompt should contain 'alpha'"
-    );
-    assert!(
-        prompt_2.contains("gamma"),
-        "third prompt should contain 'gamma'"
     );
 }
 
@@ -184,28 +121,12 @@ fn transform_end_to_end() {
     );
 }
 
-/// Verify that agent dry-run without prompt returns error.
-#[tokio::test]
-async fn agent_dry_run_without_prompt_fails() {
-    let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
-    let capture_dir = dir.path().to_path_buf();
-
-    let executor = Executor::with_defaults().unwrap_or_else(|_| std::process::abort());
-    let executor = executor.with_dry_run(capture_dir);
-
-    let result = executor.agent("test-no-prompt").execute().await;
-
-    assert!(result.is_err(), "should fail when no prompt is set");
-}
-
 // ── Regression tests ────────────────────────────────────────────
 
 /// Verify that dry-run capture includes auth environment keys in meta.json.
 #[tokio::test]
 #[allow(clippy::unwrap_used)] // reason: integration test assertions
 async fn regression_dry_run_captures_auth_in_meta() {
-    // Regression: dry-run mode did not capture the "environment" key in
-    // meta.json, losing auth context.
     let dir = tempfile::tempdir().unwrap();
     let capture_dir = dir.path().to_path_buf();
 
@@ -215,12 +136,8 @@ async fn regression_dry_run_captures_auth_in_meta() {
         .with_default_auth(auth)
         .with_dry_run(capture_dir.clone());
 
-    let _result = executor
-        .agent("auth-capture-test")
-        .prompt("test prompt")
-        .execute()
-        .await
-        .unwrap();
+    let config = AgentConfig::new("auth-capture-test", "test prompt");
+    let _result = executor.run_agent(&config).await.unwrap();
 
     let meta_path = capture_dir
         .join("auth-capture-test")
@@ -247,8 +164,6 @@ async fn regression_dry_run_captures_auth_in_meta() {
 #[tokio::test]
 #[allow(clippy::unwrap_used)] // reason: integration test assertions
 async fn regression_dry_run_captures_work_dir_files_in_meta() {
-    // Regression: dry-run mode must capture work directory file listing
-    // in meta.json so that pipeline debugging shows what files were available.
     let dir = tempfile::tempdir().unwrap();
     let capture_dir = dir.path().join("capture");
     let work_dir = dir.path().join("work");
@@ -261,13 +176,11 @@ async fn regression_dry_run_captures_work_dir_files_in_meta() {
         .unwrap()
         .with_dry_run(capture_dir.clone());
 
-    let _result = executor
-        .agent("workdir-capture-test")
-        .prompt("test prompt")
-        .work_dir(&work_dir)
-        .execute()
-        .await
-        .unwrap();
+    let config = AgentConfig {
+        work_dir: Some(work_dir),
+        ..AgentConfig::new("workdir-capture-test", "test prompt")
+    };
+    let _result = executor.run_agent(&config).await.unwrap();
 
     let meta_path = capture_dir
         .join("workdir-capture-test")
@@ -294,6 +207,33 @@ async fn regression_dry_run_captures_work_dir_files_in_meta() {
     assert!(
         file_names.contains(&"config.json"),
         "workDirFiles must contain config.json"
+    );
+}
+
+/// Verify dry-run with model config produces correct YAML.
+#[tokio::test]
+async fn agent_dry_run_with_model_in_yaml() {
+    let dir = tempfile::tempdir().unwrap();
+    let capture_dir = dir.path().to_path_buf();
+
+    let executor = Executor::with_defaults()
+        .unwrap()
+        .with_dry_run(capture_dir.clone());
+
+    let config = AgentConfig {
+        model: Some(Model::Opus4_6),
+        ..AgentConfig::new("model-test", "test prompt")
+    };
+
+    let result = executor.run_agent(&config).await.unwrap();
+    assert!(result.success, "dry-run should succeed");
+
+    let task_yaml =
+        std::fs::read_to_string(capture_dir.join("model-test").join("0").join("task.yaml"))
+            .unwrap();
+    assert!(
+        task_yaml.contains("claude-opus-4-6"),
+        "task YAML must contain the resolved model ID, got: {task_yaml}"
     );
 }
 
