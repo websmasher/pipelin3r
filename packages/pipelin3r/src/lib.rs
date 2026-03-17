@@ -21,6 +21,8 @@ pub mod error;
 pub mod executor;
 /// Centralized filesystem operations.
 pub(crate) mod fs;
+/// Image generation via the OpenRouter API.
+pub mod image_gen;
 /// Typed LLM model and provider selection.
 pub mod model;
 /// Bounded async concurrency pool.
@@ -31,6 +33,8 @@ pub mod template;
 pub mod transform;
 /// Utility functions for processing LLM output.
 pub mod utils;
+/// Validate-and-fix loop for iterative convergence.
+pub mod validate;
 
 // Private: task YAML builder used by agent.rs.
 pub(crate) mod task;
@@ -38,11 +42,19 @@ pub(crate) mod task;
 pub use agent::{AgentConfig, AgentResult, RetryConfig};
 pub use auth::{Auth, EnvironmentMap};
 pub use bundle_dir::BundleDir;
-pub use command::{CommandBuilder, CommandResult};
+pub use command::{CommandConfig, CommandResult, run_command};
 pub use error::PipelineError;
 pub use executor::Executor;
+pub use image_gen::{
+    AspectRatio, ImageGenConfig, ImageGenHttpConfig, ImageGenResult, ImageModel, RefImage,
+    RefImageRole, generate_image,
+};
 pub use model::{Model, ModelConfig, Provider, Tool};
 pub use pool::{run_pool, run_pool_map};
 pub use template::TemplateFiller;
 pub use transform::{TransformBuilder, TransformResult};
 pub use utils::{chunk_by_size, parse_labeled_fields, strip_code_fences, strip_preamble};
+pub use validate::{
+    RemediationAction, ValidateConfig, ValidateResult, ValidationFinding, ValidationReport,
+    validate_and_fix,
+};

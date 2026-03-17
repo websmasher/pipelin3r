@@ -1,4 +1,8 @@
 //! Adversarial tests for `work_dir` — Round 2.
+#![allow(
+    unused_crate_dependencies,
+    reason = "integration test: deps used by lib not by test binary"
+)]
 //!
 //! These tests target edge cases that Round 1 missed or that the Round 1 fixes
 //! may have introduced. Focus areas: `validate_work_dir` boundary conditions,

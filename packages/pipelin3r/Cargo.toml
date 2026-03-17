@@ -12,8 +12,12 @@ readme = "README.md"
 exclude = [".plans/", ".worklogs/"]
 
 [dependencies]
-shedul3r-rs-sdk = { version = "0.1.0", path = "../shedul3r-rs-sdk" }
+base64 = "0.22"
+limit3r = { version = "0.1.0", path = "../limit3r" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shedul3r-rs-sdk = { version = "0.1.0", path = "../shedul3r-rs-sdk" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "process", "fs"] }
 toml = "0.8"

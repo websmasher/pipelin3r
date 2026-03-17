@@ -1,15 +1,27 @@
 //! Shell command execution wrapper.
 
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::error::PipelineError;
 
-/// Builder for executing shell commands.
-#[must_use]
-pub struct CommandBuilder {
-    program: String,
-    args: Vec<String>,
-    work_dir: Option<PathBuf>,
+/// Environment variable map for command execution.
+pub type EnvMap = BTreeMap<String, String>;
+
+/// Configuration for a shell command.
+#[derive(Debug, Clone)]
+pub struct CommandConfig {
+    /// Program to execute.
+    pub program: String,
+    /// Arguments to pass to the program.
+    pub args: Vec<String>,
+    /// Working directory for execution.
+    pub work_dir: Option<PathBuf>,
+    /// Additional environment variables.
+    pub env: Option<EnvMap>,
+    /// Execution timeout.
+    pub timeout: Option<Duration>,
 }
 
 /// Result of a shell command execution.
@@ -25,51 +37,64 @@ pub struct CommandResult {
     pub exit_code: Option<i32>,
 }
 
-impl CommandBuilder {
-    /// Create a new command builder for the given program.
-    pub fn new(program: &str) -> Self {
+impl CommandConfig {
+    /// Create a new command configuration for the given program.
+    ///
+    /// All optional fields default to `None` and args default to empty.
+    #[must_use]
+    pub fn new(program: impl Into<String>) -> Self {
         Self {
-            program: String::from(program),
+            program: program.into(),
             args: Vec::new(),
             work_dir: None,
+            env: None,
+            timeout: None,
+        }
+    }
+}
+
+/// Execute a shell command.
+///
+/// Spawns the configured program as a subprocess, optionally setting
+/// the working directory, environment variables, and a timeout.
+///
+/// # Errors
+/// Returns an error if the command cannot be spawned or if the timeout expires.
+pub async fn run_command(config: &CommandConfig) -> Result<CommandResult, PipelineError> {
+    let mut cmd = tokio::process::Command::new(&config.program);
+    let _ = cmd.args(&config.args);
+
+    if let Some(dir) = &config.work_dir {
+        let _ = cmd.current_dir(dir);
+    }
+
+    if let Some(env_vars) = &config.env {
+        for (key, value) in env_vars {
+            let _ = cmd.env(key, value);
         }
     }
 
-    /// Add arguments to the command.
-    pub fn args(mut self, args: &[&str]) -> Self {
-        self.args.extend(args.iter().map(|s| String::from(*s)));
-        self
-    }
+    let output = if let Some(duration) = config.timeout {
+        tokio::time::timeout(duration, cmd.output())
+            .await
+            .map_err(|_| {
+                PipelineError::Command(format!(
+                    "command '{}' timed out after {duration:?}",
+                    config.program
+                ))
+            })??
+    } else {
+        cmd.output().await?
+    };
 
-    /// Set the work directory for command execution.
-    pub fn work_dir(mut self, path: &Path) -> Self {
-        self.work_dir = Some(path.to_path_buf());
-        self
-    }
+    let exit_code = output.status.code();
 
-    /// Execute the command and return the result.
-    ///
-    /// # Errors
-    /// Returns an error if the command cannot be spawned.
-    pub async fn execute(self) -> Result<CommandResult, PipelineError> {
-        let mut cmd = tokio::process::Command::new(&self.program);
-        let _ = cmd.args(&self.args);
-
-        if let Some(dir) = &self.work_dir {
-            let _ = cmd.current_dir(dir);
-        }
-
-        let output = cmd.output().await?;
-
-        let exit_code = output.status.code();
-
-        Ok(CommandResult {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code,
-        })
-    }
+    Ok(CommandResult {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code,
+    })
 }
 
 impl CommandResult {

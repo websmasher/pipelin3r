@@ -30,6 +30,12 @@ pub enum PipelineError {
         /// Description of the failure.
         message: String,
     },
+    /// Image generation failed.
+    #[error("image generation failed: {message}")]
+    ImageGenFailed {
+        /// Description of the failure.
+        message: String,
+    },
     /// A batch had partial failures.
     #[error("batch partial failure: {succeeded} succeeded, {failed} failed — {message}")]
     BatchPartialFailure {
@@ -39,6 +45,18 @@ pub enum PipelineError {
         failed: usize,
         /// Summary message.
         message: String,
+    },
+    /// A validate-and-fix loop exhausted its iteration budget without converging.
+    #[error(
+        "validation '{name}' did not converge after {iterations} iterations: {remaining_errors}"
+    )]
+    ValidationExhausted {
+        /// Name of the validation loop.
+        name: String,
+        /// Number of iterations executed.
+        iterations: u32,
+        /// Description of remaining errors.
+        remaining_errors: String,
     },
     /// An operation timed out.
     #[error("timeout: {message}")]

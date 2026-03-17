@@ -1,4 +1,8 @@
 //! Adversarial tests for `work_dir` implementation in pipelin3r.
+#![allow(
+    unused_crate_dependencies,
+    reason = "integration test: deps used by lib not by test binary"
+)]
 //!
 //! These tests are designed to expose bugs, missing validation, and edge cases
 //! in the `work_dir` handling across agent execution, dry-run capture, and

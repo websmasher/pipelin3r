@@ -1,5 +1,8 @@
 //! Integration tests for pipelin3r: agent dry-run and transform flows.
-
+#![allow(
+    unused_crate_dependencies,
+    reason = "integration test: deps used by lib not by test binary"
+)]
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 #![allow(
     clippy::disallowed_methods,

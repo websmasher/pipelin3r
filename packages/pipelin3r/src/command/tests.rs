@@ -4,10 +4,12 @@ use super::*;
 
 #[tokio::test]
 async fn echo_command_succeeds() {
-    let result = CommandBuilder::new("echo")
-        .args(&["hello", "world"])
-        .execute()
-        .await;
+    let config = CommandConfig {
+        args: vec![String::from("hello"), String::from("world")],
+        ..CommandConfig::new("echo")
+    };
+
+    let result = run_command(&config).await;
 
     assert!(result.is_ok(), "echo should not fail to spawn");
     let cmd_result = result.unwrap_or_else(|_| CommandResult {
@@ -27,7 +29,8 @@ async fn echo_command_succeeds() {
 
 #[tokio::test]
 async fn false_command_fails() {
-    let result = CommandBuilder::new("false").execute().await;
+    let config = CommandConfig::new("false");
+    let result = run_command(&config).await;
 
     assert!(result.is_ok(), "false should not fail to spawn");
     let cmd_result = result.unwrap_or_else(|_| CommandResult {
@@ -63,4 +66,48 @@ fn require_success_on_failure() {
     };
     let err = result.require_success();
     assert!(err.is_err(), "should return Err for failed command");
+}
+
+#[tokio::test]
+async fn command_with_env_vars() {
+    let mut env = BTreeMap::new();
+    let _ = env.insert(String::from("TEST_VAR"), String::from("hello_env"));
+
+    let config = CommandConfig {
+        args: vec![String::from("-c"), String::from("echo $TEST_VAR")],
+        env: Some(env),
+        ..CommandConfig::new("sh")
+    };
+
+    let result = run_command(&config).await;
+    assert!(result.is_ok(), "sh should not fail to spawn");
+    let cmd_result = result.unwrap_or_else(|_| CommandResult {
+        success: false,
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: None,
+    });
+    assert!(cmd_result.success, "sh -c echo should succeed");
+    assert_eq!(
+        cmd_result.stdout.trim(),
+        "hello_env",
+        "env var should be passed through"
+    );
+}
+
+#[tokio::test]
+async fn command_timeout_expires() {
+    let config = CommandConfig {
+        args: vec![String::from("-c"), String::from("sleep 60")],
+        timeout: Some(Duration::from_millis(50)),
+        ..CommandConfig::new("sh")
+    };
+
+    let result = run_command(&config).await;
+    assert!(result.is_err(), "command should fail due to timeout");
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("timed out"),
+        "error should mention timeout, got: {err_msg}"
+    );
 }
