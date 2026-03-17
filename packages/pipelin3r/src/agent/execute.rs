@@ -244,7 +244,23 @@ pub async fn execute_with_work_dir(
 
     // Wrap execution in a block that always cleans up the bundle.
     let execution_result = async {
-        let result = client.submit_task(&payload).await?;
+        // Use file-poll recovery when local and expected outputs are set.
+        // shedul3r sometimes drops HTTP connections for long tasks, but the
+        // agent still completes and writes output files. The SDK races the
+        // HTTP call against a file poller.
+        let first_expected = if remote {
+            None
+        } else {
+            work_dir.and_then(|dir| expected_outputs.first().map(|name| dir.join(name)))
+        };
+
+        let result = if let Some(ref expected_path) = first_expected {
+            client
+                .submit_task_with_recovery(&payload, expected_path)
+                .await?
+        } else {
+            client.submit_task(&payload).await?
+        };
 
         // Download expected outputs from remote bundle back to local work-dir.
         if let Some(ref handle) = bundle_handle {
