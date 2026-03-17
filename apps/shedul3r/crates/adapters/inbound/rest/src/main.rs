@@ -140,6 +140,11 @@ async fn serve(port_override: Option<u16>) {
 
         app
     })
+    // Tasks run for minutes (agent executions). Actix-web defaults are 5 seconds
+    // for keep-alive and client_request_timeout, which causes "error decoding
+    // response body" on the client for any task longer than 5s.
+    .keep_alive(std::time::Duration::from_secs(3600))
+    .client_request_timeout(std::time::Duration::from_secs(3600))
     .bind(&addr)
     .expect("failed to bind HTTP server")
     .run()

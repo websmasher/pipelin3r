@@ -242,16 +242,22 @@ fn task_result_require_success_err() {
 
 #[test]
 fn api_elapsed_display_seconds_only() {
-    let elapsed = ApiElapsed {
-        secs: Some(42),
-        nanos: Some(0),
-    };
+    let elapsed = ApiElapsed::Float(42.0);
     assert_eq!(elapsed.to_display_string(), "42s");
 }
 
 #[test]
 fn api_elapsed_display_with_millis() {
-    let elapsed = ApiElapsed {
+    let elapsed = ApiElapsed::Float(3.150);
+    // Float precision: 3.150 → whole=3, frac=0.150*1000=150
+    let display = elapsed.to_display_string();
+    assert!(display.starts_with("3."), "should start with 3.: {display}");
+    assert!(display.ends_with('s'), "should end with s: {display}");
+}
+
+#[test]
+fn api_elapsed_display_legacy_struct() {
+    let elapsed = ApiElapsed::Struct {
         secs: Some(3),
         nanos: Some(150_000_000),
     };

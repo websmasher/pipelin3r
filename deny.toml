@@ -19,9 +19,7 @@ allow-wildcard-paths = true
 highlight = "all"
 
 skip = [
-# Skip entries for deny.toml [bans] section
     { crate = "core-foundation@0.9.4", reason = "transitive duplicate: hyper-util pulls 0.9 via system-configuration, native-tls pulls 0.10" },
-
 ]
 
 deny = [
@@ -61,11 +59,6 @@ deny = [
     { name = "rmp-serde", wrappers = [] },
     { name = "prost", wrappers = [] },
     { name = "flatbuffers", wrappers = [] },
-    # --- Local overrides ---
-# Additional [bans] deny entries for deny.toml
-# Example:
-#     { name = "some-crate", wrappers = [] },
-
 ]
 
 # Feature-level bans -- prevent agents from enabling kitchen-sink features
@@ -74,13 +67,6 @@ name = "tokio"
 deny = ["full"]
 # Force explicit feature selection instead of enabling everything
 allow = ["rt-multi-thread", "rt", "macros", "net", "sync", "signal", "bytes", "default", "io-util", "time", "fs", "process"]
-
-# Additional [[bans.features]] entries for deny.toml
-# Example:
-#     [[bans.features]]
-#     name = "some-crate"
-#     deny = ["full"]
-
 
 # ============================================================
 # LICENSE CHECKING

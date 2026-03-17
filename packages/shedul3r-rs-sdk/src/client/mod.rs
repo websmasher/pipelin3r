@@ -124,23 +124,54 @@ pub(crate) struct ApiResponseMetadata {
     pub(crate) exit_code: Option<i32>,
 }
 
-/// The server serialises `Duration` as `{ secs, nanos }`.
+/// Elapsed time from the server response.
+///
+/// The server serializes `Duration` as fractional seconds (e.g., `420.283`).
+/// We accept both a plain float and a `{ secs, nanos }` struct for
+/// backwards compatibility.
 #[derive(Deserialize)]
-pub(crate) struct ApiElapsed {
-    pub(crate) secs: Option<u64>,
-    pub(crate) nanos: Option<u32>,
+#[serde(untagged)]
+pub(crate) enum ApiElapsed {
+    /// Fractional seconds (current shedul3r format).
+    Float(f64),
+    /// Struct with secs/nanos (legacy format).
+    Struct {
+        secs: Option<u64>,
+        nanos: Option<u32>,
+    },
 }
 
 impl ApiElapsed {
     /// Format the elapsed duration as a human-readable string.
     pub(crate) fn to_display_string(&self) -> String {
-        let secs = self.secs.unwrap_or(0);
-        let nanos = self.nanos.unwrap_or(0);
-        if nanos == 0 {
-            format!("{secs}s")
-        } else {
-            let millis = nanos.saturating_div(1_000_000);
-            format!("{secs}.{millis:03}s")
+        match self {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss,
+                clippy::as_conversions,
+                reason = "elapsed seconds are always small positive values; precision loss is acceptable for display"
+            )]
+            Self::Float(secs) => {
+                let whole = *secs as u64;
+                let frac = *secs - (whole as f64);
+                let millis = (frac * 1000.0) as u64;
+                if millis == 0 {
+                    format!("{whole}s")
+                } else {
+                    format!("{whole}.{millis:03}s")
+                }
+            }
+            Self::Struct { secs, nanos } => {
+                let s = secs.unwrap_or(0);
+                let n = nanos.unwrap_or(0);
+                if n == 0 {
+                    format!("{s}s")
+                } else {
+                    let millis = n.saturating_div(1_000_000);
+                    format!("{s}.{millis:03}s")
+                }
+            }
         }
     }
 }
@@ -261,6 +292,14 @@ impl Client {
 /// Task-level failures (server returned `success: false`) are returned as
 /// `Ok(TaskResult { success: false, .. })`.
 #[allow(clippy::disallowed_methods)] // SDK client: thin HTTP wrapper, validation is caller's responsibility
+#[allow(
+    clippy::too_many_lines,
+    reason = "HTTP call with recovery has sequential phases"
+)]
+#[allow(
+    clippy::print_stderr,
+    reason = "SDK diagnostic output — no tracing dependency"
+)]
 pub(crate) async fn http_call(
     http: &reqwest::Client,
     url: &str,
@@ -292,13 +331,36 @@ pub(crate) async fn http_call(
         }
     };
 
-    let response: ApiResponse = match resp.json::<ApiResponse>().await {
-        Ok(r) => r,
+    // Read raw bytes first to diagnose decode failures.
+    let raw_bytes = match resp.bytes().await {
+        Ok(b) => b,
         Err(e) => {
+            eprintln!("[shedul3r-sdk] failed to read response bytes: {e}");
             if let Some(recovered) = try_file_recovery(expected_output) {
                 return Ok(recovered);
             }
             return Err(SdkError::Http(e));
+        }
+    };
+
+    let response: ApiResponse = match serde_json::from_slice(&raw_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            let body_len = raw_bytes.len();
+            let preview = String::from_utf8_lossy(
+                raw_bytes
+                    .get(..raw_bytes.len().min(300))
+                    .unwrap_or(&raw_bytes),
+            );
+            eprintln!(
+                "[shedul3r-sdk] JSON parse failed: {e} | body: {body_len} bytes | preview: {preview}"
+            );
+            if let Some(recovered) = try_file_recovery(expected_output) {
+                return Ok(recovered);
+            }
+            return Err(SdkError::TaskFailed {
+                message: format!("response JSON parse error: {e} (body: {body_len} bytes)"),
+            });
         }
     };
 

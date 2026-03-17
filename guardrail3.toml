@@ -13,23 +13,23 @@ tests = true             # R-TEST-* — test quality and organization
 release = true           # R-REL-*, R-PUB-*, R-BIN-* — crate publish readiness
 
 # --- Libraries (in packages/) ---
-[rust.crates.limit3r]
+[rust.apps.limit3r]
 profile = "library"
 layer = "pure"
 allowed_deps = ["serde", "thiserror", "tokio", "tracing", "parking_lot"]
 
-[rust.crates.shedul3r-rs-sdk]
+[rust.apps.shedul3r-rs-sdk]
 profile = "library"
 layer = "pure"
 allowed_deps = ["reqwest", "serde", "serde_json", "thiserror", "tokio", "urlencoding"]
 
-[rust.crates.pipelin3r]
+[rust.apps.pipelin3r]
 profile = "library"
 layer = "pure"
 allowed_deps = ["shedul3r-rs-sdk", "serde_json", "thiserror", "tokio", "toml", "tracing"]
 
 # --- Binary stub ---
-[rust.crates.shedul3r-bin]
+[rust.apps.shedul3r-bin]
 profile = "service"
 layer = "composition-root"
 
