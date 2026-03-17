@@ -5,18 +5,20 @@
 //! the `shedul3r-rs-sdk` HTTP client with authentication, dry-run capture,
 //! and bounded-concurrency batch execution.
 
-/// Per-invocation authentication.
-pub mod auth;
 /// Agent builder for single and batch LLM invocations.
 pub mod agent;
-/// Bundle packaging for file transfer.
-pub mod bundle;
+/// Per-invocation authentication.
+pub mod auth;
+/// Bundle packaging for file transfer (internal transport mechanism).
+pub(crate) mod bundle;
 /// Shell command execution.
 pub mod command;
 /// Typed error enum.
 pub mod error;
 /// Pipeline executor (SDK client + auth + dry-run).
 pub mod executor;
+/// Centralized filesystem operations.
+pub(crate) mod fs;
 /// Typed LLM model and provider selection.
 pub mod model;
 /// Bounded async concurrency pool.
@@ -30,8 +32,7 @@ pub mod transform;
 pub(crate) mod task;
 
 pub use agent::{AgentBuilder, AgentResult, AgentTask};
-pub use auth::Auth;
-pub use bundle::Bundle;
+pub use auth::{Auth, EnvironmentMap};
 pub use command::{CommandBuilder, CommandResult};
 pub use error::PipelineError;
 pub use executor::Executor;

@@ -1023,6 +1023,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "shedul3r"
+version = "0.2.0"
+
+[[package]]
 name = "shedul3r-rs-sdk"
 version = "0.1.0"
 dependencies = [

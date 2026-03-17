@@ -25,13 +25,15 @@
 //! # }
 //! ```
 
-/// HTTP client for the shedul3r API.
-pub mod client;
 /// Bundle upload and download utilities.
 pub mod bundle;
+/// HTTP client for the shedul3r API.
+pub mod client;
 /// Typed error enum.
 pub mod error;
+/// Centralized filesystem operations.
+pub(crate) mod fs;
 
-pub use client::{Client, ClientConfig, TaskPayload, TaskResult};
-pub use bundle::BundleHandle;
+pub use bundle::{BundleFileRef, BundleHandle};
+pub use client::{Client, ClientConfig, EnvironmentMap, TaskPayload, TaskResult};
 pub use error::SdkError;

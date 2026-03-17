@@ -55,7 +55,7 @@ let results = executor
 - **Per-invocation auth injection** -- OAuth, API key, or environment variable authentication
 - **Injection-safe template filler** -- two-phase, single-pass content replacement
 - **Model/Provider enums** -- TOML-configurable model ID resolution per provider
-- **Bundle management** -- local temp dirs or remote upload/download for file transfer
+- **Work directory transport** -- auto-detected local path or remote bundle upload/download
 - **Shell command execution** -- run shell commands as pipeline steps
 - **File transform** -- pure Rust functions on file data
 - **Dry-run capture mode** -- write prompts and task YAML to disk for testing without HTTP calls

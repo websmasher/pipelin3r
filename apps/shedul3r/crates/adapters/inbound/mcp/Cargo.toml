@@ -4,6 +4,8 @@ version.workspace = true
 description = "Inbound adapter — MCP (Model Context Protocol) transport"
 edition.workspace = true
 rust-version.workspace = true
+license = "MIT"
+repository = "https://github.com/3jane/pipelin3r"
 publish.workspace = true
 
 [lints]

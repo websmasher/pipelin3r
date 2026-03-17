@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod cli;
 mod error;
+pub(crate) mod fs;
 mod extractors;
 pub(crate) mod handlers;
 pub mod state;

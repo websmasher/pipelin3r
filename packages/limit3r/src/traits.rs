@@ -26,11 +26,8 @@ pub trait CircuitBreaker: Send + Sync {
     /// # Errors
     ///
     /// Returns [`Limit3rError::CircuitOpen`] if the circuit is open.
-    fn check_permitted(
-        &self,
-        key: &str,
-        config: &CircuitBreakerConfig,
-    ) -> Result<(), Limit3rError>;
+    fn check_permitted(&self, key: &str, config: &CircuitBreakerConfig)
+    -> Result<(), Limit3rError>;
 
     /// Record a successful call for the given key, potentially closing the circuit.
     fn record_success(&self, key: &str);

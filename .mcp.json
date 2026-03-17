@@ -10,6 +10,10 @@
         "OPENVIKING_API_KEY": "683a4e9740bb889675f93c4c9217ee96bd730ed1accad803e1646101c889294b",
         "OPENVIKING_AGENT_ID": "claude-code"
       }
+    },
+    "shedul3r": {
+      "type": "http",
+      "url": "https://claude-worker-pipelin3r-mcp.trtk.me/mcp"
     }
   }
 }

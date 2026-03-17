@@ -12,9 +12,9 @@ pub enum PipelineError {
     /// Template rendering failed.
     #[error("template error: {0}")]
     Template(String),
-    /// Bundle creation or extraction failed.
-    #[error("bundle error: {0}")]
-    Bundle(String),
+    /// File transport (bundle upload/download or work-dir I/O) failed.
+    #[error("transport error: {0}")]
+    Transport(String),
     /// A shell command failed.
     #[error("command failed: {0}")]
     Command(String),

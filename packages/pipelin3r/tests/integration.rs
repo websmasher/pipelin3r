@@ -1,5 +1,11 @@
 //! Integration tests for pipelin3r: agent dry-run and transform flows.
 
+#![allow(clippy::unwrap_used, reason = "test assertions")]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: direct fs access for test fixtures"
+)]
+
 // Suppress unused-crate-dependencies for test binary (these are used by the library).
 use serde_json as _;
 use shedul3r_rs_sdk as _;
@@ -11,7 +17,7 @@ use tracing as _;
 use std::path::Path;
 
 use pipelin3r::{
-    AgentTask, Auth, Bundle, Executor, Model, TemplateFiller, TransformBuilder, TransformResult,
+    AgentTask, Auth, Executor, Model, TemplateFiller, TransformBuilder, TransformResult,
 };
 
 /// Verify that a single agent dry-run creates the expected capture files.
@@ -29,12 +35,15 @@ async fn agent_dry_run_creates_capture_files() {
     let template_filler = TemplateFiller::new().set("{{PACKAGE}}", "my-parser");
     let prompt_text = template_filler.fill("Implement tests for {{PACKAGE}}");
 
-    let expected_output = dir.path().join("output").join("tests.rs");
+    // Create a work directory with an input file.
+    let work_dir = dir.path().join("work");
+    std::fs::create_dir_all(&work_dir).unwrap();
+    std::fs::write(work_dir.join("input.txt"), b"test input").unwrap();
 
     let result = executor
         .agent("test-step")
         .prompt(&prompt_text)
-        .expected_output(&expected_output)
+        .work_dir(&work_dir)
         .execute()
         .await
         .unwrap();
@@ -56,11 +65,15 @@ async fn agent_dry_run_creates_capture_files() {
         "prompt.md should contain the filled template"
     );
 
-    // Verify meta.json contains expected output path.
+    // Verify meta.json contains work directory path and files.
     let meta_content = std::fs::read_to_string(step_dir.join("meta.json")).unwrap();
     assert!(
-        meta_content.contains("tests.rs"),
-        "meta.json should reference expected output path"
+        meta_content.contains("workDir"),
+        "meta.json should contain workDir key"
+    );
+    assert!(
+        meta_content.contains("input.txt"),
+        "meta.json should list work dir files"
     );
 }
 
@@ -177,8 +190,7 @@ async fn agent_dry_run_without_prompt_fails() {
     let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let capture_dir = dir.path().to_path_buf();
 
-    let executor = Executor::with_defaults()
-        .unwrap_or_else(|_| std::process::abort());
+    let executor = Executor::with_defaults().unwrap_or_else(|_| std::process::abort());
     let executor = executor.with_dry_run(capture_dir);
 
     let result = executor.agent("test-no-prompt").execute().await;
@@ -221,77 +233,67 @@ async fn regression_dry_run_captures_auth_in_meta() {
         meta.get("environment").is_some(),
         "meta.json must contain 'environment' key, got: {meta_content}"
     );
-    let env_arr = meta.get("environment").and_then(serde_json::Value::as_array);
-    assert!(
-        env_arr.is_some(),
-        "environment must be an array"
-    );
+    let env_arr = meta
+        .get("environment")
+        .and_then(serde_json::Value::as_array);
+    assert!(env_arr.is_some(), "environment must be an array");
     assert!(
         !env_arr.unwrap().is_empty(),
         "environment array must not be empty when auth is provided"
     );
 }
 
-/// Verify that dry-run capture includes bundle file paths in meta.json.
+/// Verify that dry-run capture includes work-dir file paths in meta.json.
 #[tokio::test]
 #[allow(clippy::unwrap_used)] // reason: integration test assertions
-async fn regression_dry_run_captures_bundle_in_meta() {
-    // Regression: dry-run mode did not capture the "bundleFiles" key in
-    // meta.json, losing bundle context.
+async fn regression_dry_run_captures_work_dir_files_in_meta() {
+    // Regression: dry-run mode must capture work directory file listing
+    // in meta.json so that pipeline debugging shows what files were available.
     let dir = tempfile::tempdir().unwrap();
-    let capture_dir = dir.path().to_path_buf();
+    let capture_dir = dir.path().join("capture");
+    let work_dir = dir.path().join("work");
 
-    let bundle = Bundle::new()
-        .add_text_file("input.txt", "hello world")
-        .unwrap()
-        .add_text_file("config.json", "{}")
-        .unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    std::fs::write(work_dir.join("input.txt"), b"hello world").unwrap();
+    std::fs::write(work_dir.join("config.json"), b"{}").unwrap();
 
     let executor = Executor::with_defaults()
         .unwrap()
         .with_dry_run(capture_dir.clone());
 
     let _result = executor
-        .agent("bundle-capture-test")
+        .agent("workdir-capture-test")
         .prompt("test prompt")
-        .bundle(bundle)
+        .work_dir(&work_dir)
         .execute()
         .await
         .unwrap();
 
     let meta_path = capture_dir
-        .join("bundle-capture-test")
+        .join("workdir-capture-test")
         .join("0")
         .join("meta.json");
     let meta_content = std::fs::read_to_string(&meta_path).unwrap();
     let meta: serde_json::Value = serde_json::from_str(&meta_content).unwrap();
 
     assert!(
-        meta.get("bundleFiles").is_some(),
-        "meta.json must contain 'bundleFiles' key, got: {meta_content}"
+        meta.get("workDirFiles").is_some(),
+        "meta.json must contain 'workDirFiles' key, got: {meta_content}"
     );
-    let files_arr = meta.get("bundleFiles").and_then(serde_json::Value::as_array);
-    assert!(
-        files_arr.is_some(),
-        "bundleFiles must be an array"
-    );
+    let files_arr = meta
+        .get("workDirFiles")
+        .and_then(serde_json::Value::as_array);
+    assert!(files_arr.is_some(), "workDirFiles must be an array");
     let files = files_arr.unwrap();
-    assert_eq!(
-        files.len(),
-        2,
-        "bundleFiles must list both bundle files"
-    );
-    let file_names: Vec<&str> = files
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .collect();
+    assert_eq!(files.len(), 2, "workDirFiles must list both work dir files");
+    let file_names: Vec<&str> = files.iter().filter_map(serde_json::Value::as_str).collect();
     assert!(
         file_names.contains(&"input.txt"),
-        "bundleFiles must contain input.txt"
+        "workDirFiles must contain input.txt"
     );
     assert!(
         file_names.contains(&"config.json"),
-        "bundleFiles must contain config.json"
+        "workDirFiles must contain config.json"
     );
 }
 
