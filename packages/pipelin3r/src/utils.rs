@@ -229,6 +229,21 @@ pub fn chunk_by_size<T>(
     chunks
 }
 
+/// Truncate a string to at most `max_len` bytes on a char boundary.
+///
+/// If the string is shorter than `max_len`, it is returned unchanged.
+/// Otherwise, the string is cut at the last char boundary before `max_len`.
+pub fn truncate_str(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len {
+        return s;
+    }
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    s.get(..end).unwrap_or("")
+}
+
 #[cfg(test)]
 #[path = "utils_tests.rs"]
 mod tests;

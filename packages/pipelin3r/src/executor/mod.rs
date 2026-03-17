@@ -127,10 +127,28 @@ impl Executor {
     ///
     /// # Errors
     /// Returns an error if validation, YAML building, or execution fails.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "agent execution has sequential phases (validate, build YAML, merge env, log, execute, log result) that are clearer kept together"
+    )]
     pub async fn run_agent(&self, config: &AgentConfig) -> Result<AgentResult, PipelineError> {
         use crate::agent::{
             execute_dry_run_capture, execute_with_work_dir, format_duration, validate_work_dir,
         };
+
+        // Log the config so misconfigurations are visible immediately.
+        tracing::info!(
+            name = %config.name,
+            work_dir = ?config.work_dir,
+            tools = ?config.tools,
+            model = ?config.model,
+            execution_timeout = ?config.execution_timeout,
+            provider_id = ?config.provider_id,
+            max_concurrent = ?config.max_concurrent,
+            expect_outputs = ?config.expect_outputs,
+            prompt_len = config.prompt.len(),
+            "run_agent"
+        );
 
         // Validate work_dir before any work happens.
         if let Some(ref dir) = config.work_dir {
@@ -200,7 +218,7 @@ impl Executor {
         }
 
         // Execute via the work-dir transport helper.
-        execute_with_work_dir(
+        let result = execute_with_work_dir(
             self.sdk_client(),
             !self.is_local(),
             &task_yaml,
@@ -209,7 +227,35 @@ impl Executor {
             &config.expect_outputs,
             env,
         )
-        .await
+        .await;
+
+        // Log the outcome so failures are immediately visible.
+        match &result {
+            Ok(r) if r.success => {
+                tracing::info!(
+                    name = %config.name,
+                    output_files = r.output_files.len(),
+                    output_len = r.output.len(),
+                    "agent succeeded"
+                );
+            }
+            Ok(r) => {
+                tracing::warn!(
+                    name = %config.name,
+                    output_preview = %crate::utils::truncate_str(&r.output, 200),
+                    "agent failed (task returned success=false)"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    name = %config.name,
+                    error = %e,
+                    "agent execution error"
+                );
+            }
+        }
+
+        result
     }
 
     /// Resolve the model string for task YAML.
