@@ -57,10 +57,13 @@ impl super::Client {
         let url = format!("{}/api/bundles", self.base_url());
 
         let mut form = reqwest::multipart::Form::new();
-        for &(name, content) in files {
+        for (idx, &(name, content)) in files.iter().enumerate() {
             let part =
                 reqwest::multipart::Part::bytes(content.to_vec()).file_name(String::from(name));
-            form = form.part(String::from(name), part);
+            // Use numeric index as part name — actix multipart rejects slashes
+            // in part names. The actual path is in Content-Disposition filename,
+            // which the server reads via content_disposition().get_filename().
+            form = form.part(format!("file{idx}"), part);
         }
 
         let resp: reqwest::Response = self.http_client().post(&url).multipart(form).send().await?;

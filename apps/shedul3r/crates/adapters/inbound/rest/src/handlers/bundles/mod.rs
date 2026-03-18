@@ -102,10 +102,13 @@ async fn upload(
             )));
         }
 
+        // Prefer Content-Disposition filename (preserves paths with slashes).
+        // Fall back to field name for backwards compatibility.
         let name = field
-            .name()
-            .ok_or_else(|| AppError::BadRequest("field missing name".to_owned()))?
-            .to_owned();
+            .content_disposition()
+            .and_then(|cd| cd.get_filename().map(String::from))
+            .or_else(|| field.name().map(String::from))
+            .ok_or_else(|| AppError::BadRequest("field missing name".to_owned()))?;
 
         // Validate the path: only normal components allowed (no `..`, `/`, `\`, etc.).
         validate_bundle_path(&name)?;
