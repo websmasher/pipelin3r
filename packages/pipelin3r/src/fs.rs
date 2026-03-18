@@ -97,3 +97,16 @@ pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir, std::io::Error> {
 pub fn remove_dir_all(path: &Path) -> Result<(), std::io::Error> {
     std::fs::remove_dir_all(path)
 }
+
+/// Copy a file from `src` to `dst`, returning the number of bytes copied.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if the file cannot be copied.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "centralized fs module: this IS the approved call site"
+)]
+pub fn copy(src: &Path, dst: &Path) -> Result<u64, std::io::Error> {
+    std::fs::copy(src, dst)
+}

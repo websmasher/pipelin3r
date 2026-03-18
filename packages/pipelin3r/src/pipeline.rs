@@ -86,31 +86,36 @@ impl PipelineContext {
             }
         }
 
-        // Build the agent config with work_dir and expect_outputs.
-        let config = AgentConfig {
-            work_dir: Some(self.base_dir.clone()),
-            expect_outputs: step.outputs.clone(),
-            ..step.config
+        let result = if self.executor.is_local() {
+            // Local: use base_dir directly.
+            let config = AgentConfig {
+                work_dir: Some(self.base_dir.clone()),
+                expect_outputs: step.outputs.clone(),
+                ..step.config
+            };
+            self.executor.run_agent(&config).await?
+        } else {
+            // Remote: create a temp dir with only the input files,
+            // run the agent there, copy outputs back to base_dir.
+            self.run_agent_remote(&step).await?
         };
 
-        let result = self.executor.run_agent(&config).await?;
-
-        // Verify outputs exist (for local execution — remote downloads
-        // are handled by run_agent internally via expect_outputs).
+        // Verify outputs exist.
         if result.success {
             for output in &step.outputs {
                 let path = self.base_dir.join(output);
                 if !path.is_file() {
-                    tracing::warn!(
-                        "step '{}': expected output not found: {}",
-                        config.name,
-                        output
-                    );
+                    tracing::warn!("expected output not found: {}", output);
                 }
             }
         }
 
         Ok(result)
+    }
+
+    /// Remote agent execution: delegate to shared helper.
+    async fn run_agent_remote(&self, step: &AgentStep) -> Result<AgentResult, PipelineError> {
+        run_agent_with_temp_dir(&self.executor, &self.base_dir, step.clone()).await
     }
 
     /// Run a batch of agent steps with bounded concurrency.
@@ -119,6 +124,10 @@ impl PipelineContext {
     /// runs all steps concurrently with the given concurrency limit.
     ///
     /// Returns per-item results paired with the original items.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "batch orchestration with remote/local branching"
+    )]
     pub async fn run_agent_batch<T, F>(
         &self,
         items: Vec<T>,
@@ -162,13 +171,17 @@ impl PipelineContext {
                     }
                 }
 
-                let config = AgentConfig {
-                    work_dir: Some(base_dir.clone()),
-                    expect_outputs: step.outputs.clone(),
-                    ..step.config
+                let result = if executor.is_local() {
+                    let config = AgentConfig {
+                        work_dir: Some(base_dir.clone()),
+                        expect_outputs: step.outputs.clone(),
+                        ..step.config
+                    };
+                    executor.run_agent(&config).await
+                } else {
+                    // Remote: temp dir with only inputs
+                    run_agent_with_temp_dir(&executor, &base_dir, step).await
                 };
-
-                let result = executor.run_agent(&config).await;
 
                 if let Ok(ref r) = result {
                     if r.success {
@@ -204,4 +217,51 @@ impl PipelineContext {
         tracing::info!("[{name}] Running local step");
         f(&self.base_dir)
     }
+}
+
+/// Run an agent in a temp dir with only declared inputs, copy outputs back.
+///
+/// Used by both `run_agent` (single) and `run_agent_batch` (per-item) for
+/// remote execution to avoid uploading the entire `base_dir`.
+async fn run_agent_with_temp_dir(
+    executor: &Executor,
+    base_dir: &Path,
+    step: AgentStep,
+) -> Result<AgentResult, PipelineError> {
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| PipelineError::Transport(format!("failed to create temp dir: {e}")))?;
+
+    // Copy input files into temp dir.
+    for input in &step.inputs {
+        let src = base_dir.join(input);
+        let dst = temp_dir.path().join(input);
+        if let Some(parent) = dst.parent() {
+            crate::fs::create_dir_all(parent)?;
+        }
+        let _ = crate::fs::copy(&src, &dst)?;
+    }
+
+    let config = AgentConfig {
+        work_dir: Some(temp_dir.path().to_path_buf()),
+        expect_outputs: step.outputs.clone(),
+        ..step.config
+    };
+
+    let result = executor.run_agent(&config).await?;
+
+    // Copy outputs back to base_dir.
+    if result.success {
+        for output in &step.outputs {
+            let src = temp_dir.path().join(output);
+            if src.is_file() {
+                let dst = base_dir.join(output);
+                if let Some(parent) = dst.parent() {
+                    crate::fs::create_dir_all(parent)?;
+                }
+                let _ = crate::fs::copy(&src, &dst)?;
+            }
+        }
+    }
+
+    Ok(result)
 }
