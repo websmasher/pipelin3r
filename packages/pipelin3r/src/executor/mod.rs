@@ -200,7 +200,12 @@ impl Executor {
         let auth_env = auth.map(Auth::to_env).transpose()?.unwrap_or_default();
 
         // Merge envs: auto_env (base) + auth_env + config.env (highest priority).
+        // When remote, exclude CLAUDE_CONFIG_DIR — it's a local filesystem path
+        // that doesn't exist on the remote machine.
         let mut merged = self.auto_env.clone();
+        if !self.is_local() {
+            let _ = merged.remove("CLAUDE_CONFIG_DIR");
+        }
         for (k, v) in &auth_env {
             let _ = merged.insert(k.clone(), v.clone());
         }

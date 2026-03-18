@@ -203,12 +203,18 @@ pub async fn execute_with_work_dir(
     env: Option<EnvironmentMap>,
 ) -> Result<AgentResult, PipelineError> {
     // Upload work-dir contents when remote mode is enabled and a work-dir is set.
+    // Even an empty work-dir must be uploaded so the remote server has a valid
+    // working_directory path. Without this, the local path gets sent to the
+    // remote server which rejects it (path doesn't exist there).
     let bundle_handle = if remote {
         if let Some(dir) = work_dir {
-            let files = read_dir_to_memory(dir)?;
+            let mut files = read_dir_to_memory(dir)?;
+            // Ensure at least one file so the multipart upload creates a
+            // remote temp directory even when the work-dir is empty.
             if files.is_empty() {
-                None
-            } else {
+                files.push((String::from(".gitkeep"), Vec::new()));
+            }
+            {
                 #[allow(
                     clippy::type_complexity,
                     reason = "explicit SDK upload type for clarity"
@@ -242,6 +248,15 @@ pub async fn execute_with_work_dir(
         timeout_ms: None,
     };
 
+    tracing::debug!(
+        task_yaml_len = task_yaml.len(),
+        prompt_len = prompt.len(),
+        working_directory = ?payload.working_directory,
+        has_env = payload.environment.is_some(),
+        env_keys = ?payload.environment.as_ref().map(|e| e.keys().cloned().collect::<Vec<_>>()),
+        "submitting task to shedul3r"
+    );
+
     // Wrap execution in a block that always cleans up the bundle.
     let execution_result = async {
         // Use file-poll recovery when local and expected outputs are set.
@@ -262,23 +277,35 @@ pub async fn execute_with_work_dir(
             client.submit_task(&payload).await?
         };
 
+        tracing::debug!(
+            success = result.success,
+            output_len = result.output.len(),
+            output_preview = %crate::utils::truncate_str(&result.output, 200),
+            elapsed = ?result.elapsed,
+            exit_code = ?result.exit_code,
+            "task response received"
+        );
+
         // Download expected outputs from remote bundle back to local work-dir.
-        if let Some(ref handle) = bundle_handle {
-            if let Some(dir) = work_dir {
-                for output_path in expected_outputs {
-                    // Validate each output path to prevent path traversal.
-                    validate_path(output_path)?;
+        // Only download if the task succeeded — failed tasks have no output files.
+        if result.success {
+            if let Some(ref handle) = bundle_handle {
+                if let Some(dir) = work_dir {
+                    for output_path in expected_outputs {
+                        // Validate each output path to prevent path traversal.
+                        validate_path(output_path)?;
 
-                    let bytes = client.download_file(&handle.id, output_path).await?;
+                        let bytes = client.download_file(&handle.id, output_path).await?;
 
-                    let local_path = dir.join(output_path);
-                    if let Some(parent) = local_path.parent() {
-                        tokio::fs::create_dir_all(parent).await?;
+                        let local_path = dir.join(output_path);
+                        if let Some(parent) = local_path.parent() {
+                            tokio::fs::create_dir_all(parent).await?;
+                        }
+                        tokio::fs::write(&local_path, &bytes).await?;
                     }
-                    tokio::fs::write(&local_path, &bytes).await?;
                 }
             }
-        }
+        } // if result.success (download gate)
 
         // Read expected output files into a map.
         let mut output_files = BTreeMap::new();
