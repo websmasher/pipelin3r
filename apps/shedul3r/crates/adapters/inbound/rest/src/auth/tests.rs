@@ -73,9 +73,5 @@ async fn auth_passes_with_correct_key() {
         .to_request();
     let resp = test::call_service(&app, req).await;
 
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "correct key must pass auth"
-    );
+    assert_eq!(resp.status(), StatusCode::OK, "correct key must pass auth");
 }

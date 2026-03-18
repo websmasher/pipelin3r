@@ -92,7 +92,9 @@ max-wait: 5m
         "should have retry config"
     );
     assert!(
-        td_ref.and_then(|t| t.circuit_breaker_config.as_ref()).is_some(),
+        td_ref
+            .and_then(|t| t.circuit_breaker_config.as_ref())
+            .is_some(),
         "should have circuit breaker config"
     );
     assert!(
@@ -151,10 +153,7 @@ circuit-breaker:
   wait-duration-in-open-state: 30s
 ";
     let result = parse_task_definition(yaml);
-    assert!(
-        result.is_err(),
-        "missing sliding-window-size should error"
-    );
+    assert!(result.is_err(), "missing sliding-window-size should error");
 }
 
 #[test]
@@ -180,7 +179,9 @@ fn task_without_circuit_breaker_has_none() {
     assert!(def.is_ok(), "should parse without circuit breaker");
     let td = def.ok();
     assert!(
-        td.as_ref().and_then(|t| t.circuit_breaker_config.as_ref()).is_none(),
+        td.as_ref()
+            .and_then(|t| t.circuit_breaker_config.as_ref())
+            .is_none(),
         "should not have circuit breaker config when absent"
     );
 }

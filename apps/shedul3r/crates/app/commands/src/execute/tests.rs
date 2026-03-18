@@ -251,7 +251,10 @@ async fn normal_completion_releases_bulkhead_permit() {
 fn truncate_output_short_passthrough() {
     let s = "hello world";
     let result = truncate_output(s, 100);
-    assert_eq!(result, "hello world", "short strings pass through unchanged");
+    assert_eq!(
+        result, "hello world",
+        "short strings pass through unchanged"
+    );
 }
 
 #[test]
@@ -265,10 +268,7 @@ fn truncate_output_exact_boundary() {
 fn truncate_output_keeps_tail() {
     let s = "abcdefghij";
     let result = truncate_output(s, 5);
-    assert!(
-        result.contains("fghij"),
-        "should keep the tail: {result}"
-    );
+    assert!(result.contains("fghij"), "should keep the tail: {result}");
     assert!(
         result.contains("[truncated"),
         "should have truncation header: {result}"
@@ -281,10 +281,7 @@ fn truncate_output_multibyte_boundary() {
     let s = "aaéébb";
     let result = truncate_output(s, 4);
     // The tail should be valid UTF-8 and contain "bb" at minimum.
-    assert!(
-        result.contains("bb"),
-        "should contain the end: {result}"
-    );
+    assert!(result.contains("bb"), "should contain the end: {result}");
 }
 
 #[test]

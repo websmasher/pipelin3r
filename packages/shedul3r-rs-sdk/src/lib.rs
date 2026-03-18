@@ -35,5 +35,5 @@ pub mod error;
 pub(crate) mod fs;
 
 pub use bundle::{BundleFileRef, BundleHandle};
-pub use client::{Client, ClientConfig, EnvironmentMap, TaskPayload, TaskResult};
+pub use client::{AsyncTaskStatus, Client, ClientConfig, EnvironmentMap, TaskPayload, TaskResult};
 pub use error::SdkError;

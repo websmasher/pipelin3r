@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod async_task;
 pub mod config;
 pub mod duration_serde;
 pub mod error;
@@ -9,6 +10,7 @@ pub mod request;
 pub mod subprocess;
 pub mod task;
 
+pub use async_task::{AsyncTaskState, AsyncTaskStatus};
 pub use config::{BulkheadConfig, CircuitBreakerConfig, RateLimitConfig, RetryConfig};
 pub use error::SchedulrError;
 pub use request::{

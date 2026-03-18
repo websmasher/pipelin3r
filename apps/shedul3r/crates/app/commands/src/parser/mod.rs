@@ -266,13 +266,12 @@ fn parse_circuit_breaker(mapping: &serde_yaml::Mapping) -> ParseResult<CircuitBr
             )
         })?;
 
-    let sliding_window_size =
-        extract_u32(cb_mapping, "sliding-window-size").ok_or_else(|| {
-            SchedulrError::TaskDefinition(
-                "circuit-breaker.sliding-window-size is required when circuit-breaker is specified"
-                    .to_owned(),
-            )
-        })?;
+    let sliding_window_size = extract_u32(cb_mapping, "sliding-window-size").ok_or_else(|| {
+        SchedulrError::TaskDefinition(
+            "circuit-breaker.sliding-window-size is required when circuit-breaker is specified"
+                .to_owned(),
+        )
+    })?;
 
     let wait_duration_in_open_state =
         extract_duration(cb_mapping, "wait-duration-in-open-state")?.ok_or_else(|| {

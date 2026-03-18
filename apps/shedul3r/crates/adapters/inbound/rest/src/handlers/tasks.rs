@@ -17,15 +17,9 @@ use crate::state::AppState;
 /// Registers all task-related routes on the given service config.
 pub fn configure_task_routes(cfg: &mut web::ServiceConfig) {
     let _: &mut web::ServiceConfig = cfg
-        .service(
-            web::resource("/api/tasks").route(web::post().to(execute_task)),
-        )
-        .service(
-            web::resource("/api/tasks/status").route(web::get().to(scheduler_status)),
-        )
-        .service(
-            web::resource("/api/tasks/limiter-status").route(web::get().to(limiter_status)),
-        );
+        .service(web::resource("/api/tasks").route(web::post().to(execute_task)))
+        .service(web::resource("/api/tasks/status").route(web::get().to(scheduler_status)))
+        .service(web::resource("/api/tasks/limiter-status").route(web::get().to(limiter_status)));
 }
 
 /// Execute a task and return the result.

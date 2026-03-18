@@ -3,8 +3,8 @@
 pub mod auth;
 pub mod cli;
 mod error;
-pub(crate) mod fs;
 mod extractors;
+pub(crate) mod fs;
 pub(crate) mod handlers;
 pub mod state;
 
@@ -16,5 +16,6 @@ use tracing_subscriber as _;
 
 pub use error::AppError;
 pub use extractors::ValidatedJson;
+pub use handlers::configure_async_task_routes;
 pub use handlers::configure_bundle_routes;
 pub use handlers::configure_task_routes;

@@ -23,10 +23,7 @@ struct MultipartRequest {
 }
 
 /// Build a multipart body with a single file part.
-fn multipart_body(
-    field_name: &str,
-    content: &[u8],
-) -> MultipartRequest {
+fn multipart_body(field_name: &str, content: &[u8]) -> MultipartRequest {
     let boundary = "----TestBoundary7MA4YWxkTrZu0gW";
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -40,8 +37,7 @@ fn multipart_body(
     body.extend_from_slice(content);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
-    let content_type =
-        format!("multipart/form-data; boundary={boundary}");
+    let content_type = format!("multipart/form-data; boundary={boundary}");
     MultipartRequest { content_type, body }
 }
 
@@ -63,8 +59,7 @@ async fn upload_then_download() {
     assert_eq!(upload_resp.status(), 200, "upload should succeed");
 
     let upload_body = test::read_body(upload_resp).await;
-    let upload_json: serde_json::Value =
-        serde_json::from_slice(&upload_body).unwrap_or_default();
+    let upload_json: serde_json::Value = serde_json::from_slice(&upload_body).unwrap_or_default();
 
     let bundle_id = upload_json
         .get("id")
@@ -105,8 +100,7 @@ async fn upload_then_delete() {
     assert_eq!(upload_resp.status(), 200, "upload should succeed");
 
     let upload_body = test::read_body(upload_resp).await;
-    let upload_json: serde_json::Value =
-        serde_json::from_slice(&upload_body).unwrap_or_default();
+    let upload_json: serde_json::Value = serde_json::from_slice(&upload_body).unwrap_or_default();
 
     let bundle_id = upload_json
         .get("id")
@@ -218,8 +212,7 @@ async fn download_rejects_traversal() {
     let upload_resp = test::call_service(&app, upload_req).await;
 
     let upload_body = test::read_body(upload_resp).await;
-    let upload_json: serde_json::Value =
-        serde_json::from_slice(&upload_body).unwrap_or_default();
+    let upload_json: serde_json::Value = serde_json::from_slice(&upload_body).unwrap_or_default();
     let bundle_id = upload_json
         .get("id")
         .and_then(serde_json::Value::as_str)
@@ -257,11 +250,7 @@ async fn regression_upload_rejects_oversized_field() {
         .to_request();
 
     let resp = test::call_service(&app, req).await;
-    assert_eq!(
-        resp.status(),
-        400,
-        "upload of >10MB field must return 400"
-    );
+    assert_eq!(resp.status(), 400, "upload of >10MB field must return 400");
 }
 
 #[actix_rt::test]

@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
+mod async_polling;
 mod regression;
 
 use std::time::Duration;

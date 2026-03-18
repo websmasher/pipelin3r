@@ -82,11 +82,7 @@ async fn regression_subprocess_preserves_actual_exit_code() {
     // process exit code. A command exiting with code 42 must report 42.
     let runner = TokioSubprocessRunner::new();
     let cmd = SubprocessCommand {
-        command: vec![
-            "/bin/sh".to_owned(),
-            "-c".to_owned(),
-            "exit 42".to_owned(),
-        ],
+        command: vec!["/bin/sh".to_owned(), "-c".to_owned(), "exit 42".to_owned()],
         working_directory: None,
         environment: None,
         timeout: None,

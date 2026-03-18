@@ -110,9 +110,7 @@ impl McpTaskServer {
                     .unwrap_or_else(|_| "failed to serialize response".to_owned());
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(
-                e.to_string(),
-            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
     }
 
@@ -132,15 +130,13 @@ impl McpTaskServer {
 #[tool_handler]
 impl ServerHandler for McpTaskServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder().enable_tools().build(),
-        )
-        .with_server_info(Implementation::new("shedul3r", env!("CARGO_PKG_VERSION")))
-        .with_protocol_version(ProtocolVersion::V_2025_03_26)
-        .with_instructions(
-            "shedul3r task execution engine. Execute tasks with resilience patterns \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("shedul3r", env!("CARGO_PKG_VERSION")))
+            .with_protocol_version(ProtocolVersion::V_2025_03_26)
+            .with_instructions(
+                "shedul3r task execution engine. Execute tasks with resilience patterns \
              (rate limiting, circuit breaking, retry, bulkhead)."
-                .to_owned(),
-        )
+                    .to_owned(),
+            )
     }
 }

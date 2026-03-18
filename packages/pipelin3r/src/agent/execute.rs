@@ -269,7 +269,9 @@ pub async fn execute_with_work_dir(
             work_dir.and_then(|dir| expected_outputs.first().map(|name| dir.join(name)))
         };
 
-        let result = if let Some(ref expected_path) = first_expected {
+        let result = if remote {
+            client.submit_task_poll(&payload).await?
+        } else if let Some(ref expected_path) = first_expected {
             client
                 .submit_task_with_recovery(&payload, expected_path)
                 .await?

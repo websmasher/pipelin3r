@@ -37,18 +37,17 @@ const MAX_TOTAL_BUNDLE_SIZE: u64 = 100_000_000;
 /// and Windows prefix (`C:\`). Only `Component::Normal` segments are allowed.
 fn validate_bundle_path(name: &str) -> Result<(), AppError> {
     if name.is_empty() {
-        return Err(AppError::BadRequest(
-            "bundle path is empty".to_owned(),
-        ));
+        return Err(AppError::BadRequest("bundle path is empty".to_owned()));
     }
     let path = std::path::Path::new(name);
     for component in path.components() {
         match component {
             Component::Normal(_) => {} // OK — plain filename or directory name
-            Component::Prefix(_) | Component::RootDir | Component::CurDir | Component::ParentDir => {
-                return Err(AppError::BadRequest(format!(
-                    "invalid bundle path: {name}"
-                )));
+            Component::Prefix(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir => {
+                return Err(AppError::BadRequest(format!("invalid bundle path: {name}")));
             }
         }
     }
@@ -57,17 +56,14 @@ fn validate_bundle_path(name: &str) -> Result<(), AppError> {
 
 /// Registers all bundle-related routes on the given service config.
 pub fn configure_bundle_routes(cfg: &mut web::ServiceConfig) {
-    #[allow(clippy::literal_string_with_formatting_args)] // actix-web route pattern, not a format string
+    #[allow(
+        clippy::literal_string_with_formatting_args,
+        reason = "actix-web route pattern contains {id}, not a format string"
+    )]
     let _: &mut web::ServiceConfig = cfg
-        .service(
-            web::resource("/api/bundles").route(web::post().to(upload)),
-        )
-        .service(
-            web::resource("/api/bundles/{id}/files/{path:.*}").route(web::get().to(download)),
-        )
-        .service(
-            web::resource("/api/bundles/{id}").route(web::delete().to(delete_bundle)),
-        );
+        .service(web::resource("/api/bundles").route(web::post().to(upload)))
+        .service(web::resource("/api/bundles/{id}/files/{path:.*}").route(web::get().to(download)))
+        .service(web::resource("/api/bundles/{id}").route(web::delete().to(delete_bundle)));
 }
 
 /// Poll the next item from a pinned stream.
@@ -94,12 +90,12 @@ async fn upload(
     let mut multipart = std::pin::pin!(multipart);
 
     while let Some(field_result) = stream_next(&mut multipart.as_mut()).await {
-        let field = field_result
-            .map_err(|e| AppError::BadRequest(format!("multipart read error: {e}")))?;
+        let field =
+            field_result.map_err(|e| AppError::BadRequest(format!("multipart read error: {e}")))?;
 
-        file_count = file_count.checked_add(1).ok_or_else(|| {
-            AppError::BadRequest("file count overflow".to_owned())
-        })?;
+        file_count = file_count
+            .checked_add(1)
+            .ok_or_else(|| AppError::BadRequest("file count overflow".to_owned()))?;
         if file_count > MAX_FILES_PER_BUNDLE {
             return Err(AppError::BadRequest(format!(
                 "too many files: maximum {MAX_FILES_PER_BUNDLE} per bundle"
@@ -133,14 +129,11 @@ async fn upload(
         while let Some(chunk_result) = stream_next(&mut field_pinned.as_mut()).await {
             let chunk = chunk_result
                 .map_err(|e| AppError::BadRequest(format!("failed to read field chunk: {e}")))?;
-            let chunk_len =
-                u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+            let chunk_len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
             file_size = file_size.saturating_add(chunk_len);
             total_size = total_size.saturating_add(chunk_len);
             if file_size > MAX_FIELD_SIZE {
-                return Err(AppError::BadRequest(
-                    "file exceeds 10MB limit".to_owned(),
-                ));
+                return Err(AppError::BadRequest("file exceeds 10MB limit".to_owned()));
             }
             if total_size > MAX_TOTAL_BUNDLE_SIZE {
                 return Err(AppError::BadRequest(

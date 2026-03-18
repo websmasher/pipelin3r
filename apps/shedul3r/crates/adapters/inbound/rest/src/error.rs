@@ -47,10 +47,7 @@ impl actix_web::error::ResponseError for AppError {
             Self::NotFound(msg) => ("not_found", msg.clone()),
             Self::Internal(msg) => {
                 tracing::error!(error = %msg, "internal error");
-                (
-                    "internal_error",
-                    "An internal error occurred".to_owned(),
-                )
+                ("internal_error", "An internal error occurred".to_owned())
             }
             Self::External(msg) => {
                 tracing::error!(error = %msg, "external service error");

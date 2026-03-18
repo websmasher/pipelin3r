@@ -11,6 +11,9 @@ use crate::error::SdkError;
 /// Type alias for environment variable maps to reduce type complexity.
 pub type EnvironmentMap = BTreeMap<String, String>;
 
+mod async_poll;
+pub use async_poll::AsyncTaskStatus;
+
 #[cfg(test)]
 mod tests;
 
@@ -108,7 +111,7 @@ impl TaskResult {
 }
 
 /// Raw JSON response from the shedul3r API.
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ApiResponse {
     pub(crate) success: Option<bool>,
     pub(crate) output: Option<String>,
@@ -117,7 +120,7 @@ pub(crate) struct ApiResponse {
 }
 
 /// Metadata nested inside [`ApiResponse`].
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ApiResponseMetadata {
     pub(crate) started_at: Option<String>,
     pub(crate) elapsed: Option<ApiElapsed>,
@@ -129,7 +132,7 @@ pub(crate) struct ApiResponseMetadata {
 /// The server serializes `Duration` as fractional seconds (e.g., `420.283`).
 /// We accept both a plain float and a `{ secs, nanos }` struct for
 /// backwards compatibility.
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum ApiElapsed {
     /// Fractional seconds (current shedul3r format).

@@ -28,9 +28,7 @@ pub struct ApiKeyAuth {
 impl ApiKeyAuth {
     /// Creates a new `ApiKeyAuth` middleware factory with the given expected key.
     pub fn new(key: String) -> Self {
-        Self {
-            key: Arc::new(key),
-        }
+        Self { key: Arc::new(key) }
     }
 }
 
@@ -101,8 +99,7 @@ where
                     "error": "unauthorized",
                     "message": "missing or invalid API key"
                 });
-                let response = HttpResponse::build(StatusCode::UNAUTHORIZED)
-                    .json(body);
+                let response = HttpResponse::build(StatusCode::UNAUTHORIZED).json(body);
                 Ok(req.into_response(response).map_into_right_body())
             }
         })

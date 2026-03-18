@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use rest::auth::ApiKeyAuth;
 use rest::cli::Cli;
+use rest::configure_async_task_routes;
 use rest::configure_bundle_routes;
 use rest::configure_task_routes;
 use rest::state::build_app_state;
@@ -87,6 +88,18 @@ async fn serve(port_override: Option<u16>) {
         }
     });
 
+    // Background reaper: clean up completed/failed async task entries every 60s.
+    let reaper_store = Arc::clone(&state.async_tasks);
+    let _reaper_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let reaped = reaper_store.reap_expired();
+            if reaped > 0 {
+                tracing::info!(reaped, "reaped expired async task entries");
+            }
+        }
+    });
+
     // Optional API key authentication: if SHEDUL3R_API_KEY is set, require
     // Bearer token on protected routes only.
     #[allow(clippy::disallowed_methods)] // Startup: env var reading is confined to main()
@@ -130,11 +143,13 @@ async fn serve(port_override: Option<u16>) {
                 web::scope("")
                     .wrap(ApiKeyAuth::new(key.clone()))
                     .configure(configure_task_routes)
+                    .configure(configure_async_task_routes)
                     .configure(configure_bundle_routes),
             );
         } else {
             app = app
                 .configure(configure_task_routes)
+                .configure(configure_async_task_routes)
                 .configure(configure_bundle_routes);
         }
 
