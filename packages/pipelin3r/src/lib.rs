@@ -25,6 +25,8 @@ pub(crate) mod fs;
 pub mod image_gen;
 /// Typed LLM model and provider selection.
 pub mod model;
+/// Pipeline context for step orchestration with file routing.
+pub mod pipeline;
 /// Bounded async concurrency pool.
 pub mod pool;
 /// Two-phase template filler.
@@ -50,6 +52,7 @@ pub use image_gen::{
     RefImageRole, generate_image,
 };
 pub use model::{Model, ModelConfig, Provider, Tool};
+pub use pipeline::{AgentStep, PipelineContext};
 pub use pool::{run_pool, run_pool_map};
 pub use template::TemplateFiller;
 pub use transform::{TransformBuilder, TransformResult};
