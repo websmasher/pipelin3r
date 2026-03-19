@@ -37,6 +37,8 @@ pub mod transform;
 pub mod utils;
 /// Validate-and-fix loop for iterative convergence.
 pub mod validate;
+/// Doer-breaker-fixer pattern for verified LLM pipeline steps.
+pub mod verified;
 
 // Private: task YAML builder used by agent.rs.
 pub(crate) mod task;
@@ -46,7 +48,7 @@ pub use auth::{Auth, EnvironmentMap};
 pub use bundle_dir::BundleDir;
 pub use command::{CommandConfig, CommandResult, run_command};
 pub use error::PipelineError;
-pub use executor::Executor;
+pub use executor::{Executor, RemoteCommandConfig};
 pub use image_gen::{
     AspectRatio, ImageGenConfig, ImageGenHttpConfig, ImageGenResult, ImageModel, RefImage,
     RefImageRole, generate_image,
@@ -60,4 +62,8 @@ pub use utils::{chunk_by_size, parse_labeled_fields, strip_code_fences, strip_pr
 pub use validate::{
     RemediationAction, ValidateConfig, ValidateResult, ValidationFinding, ValidationReport,
     validate_and_fix,
+};
+pub use verified::{
+    Breaker, PromptedStep, Var, VerifiedStep, VerifiedStepResult, run_verified_step,
+    run_verified_step_batch,
 };

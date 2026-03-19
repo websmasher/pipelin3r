@@ -16,6 +16,7 @@ fn golden_fixture_matches() {
         retry_initial_delay: None,
         retry_backoff_multiplier: None,
         retry_max_delay: None,
+        command_override: None,
     };
 
     let expected = "\
@@ -50,6 +51,7 @@ fn custom_values_override_defaults() {
         retry_initial_delay: Some(String::from("10s")),
         retry_backoff_multiplier: Some(3.0),
         retry_max_delay: Some(String::from("1m")),
+        command_override: None,
     };
 
     let result = build_task_yaml(&config).unwrap();

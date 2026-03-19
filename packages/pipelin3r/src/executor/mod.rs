@@ -5,11 +5,71 @@ use std::path::PathBuf;
 
 use shedul3r_rs_sdk::{Client, ClientConfig};
 
+use std::time::Duration;
+
 use crate::agent::{AgentConfig, AgentResult};
-use crate::auth::{Auth, merge_env};
+use crate::auth::{Auth, EnvironmentMap, merge_env};
 use crate::error::PipelineError;
 use crate::model::{ModelConfig, Provider};
 use crate::task::{TaskConfig, build_task_yaml};
+
+/// Configuration for a remote shell command executed via shedul3r.
+///
+/// Unlike [`AgentConfig`], this runs a raw shell command without involving
+/// Claude Code. The command executes via `/bin/sh -c` on the remote machine.
+#[derive(Debug, Clone)]
+pub struct RemoteCommandConfig {
+    /// Task name (for logging and YAML).
+    pub name: String,
+    /// Shell command to execute (passed to `/bin/sh -c`).
+    pub command: String,
+    /// Working directory on the remote machine.
+    pub work_dir: Option<PathBuf>,
+    /// Data to pipe to the command's stdin.
+    pub stdin: Option<String>,
+    /// Additional environment variables.
+    pub env: Option<EnvironmentMap>,
+    /// Expected output files (relative to `work_dir`).
+    pub expect_outputs: Vec<String>,
+    /// Execution timeout.
+    pub timeout: Option<Duration>,
+    /// Provider/limiter key for rate limiting.
+    pub provider_id: Option<String>,
+    /// Maximum concurrent tasks for this provider key.
+    pub max_concurrent: Option<usize>,
+    /// Maximum queue wait time.
+    pub max_wait: Option<Duration>,
+    /// Maximum retry attempts.
+    pub max_retries: Option<usize>,
+    /// Initial retry delay.
+    pub retry_initial_delay: Option<Duration>,
+    /// Retry backoff multiplier.
+    pub retry_backoff_multiplier: Option<f64>,
+    /// Maximum retry delay.
+    pub retry_max_delay: Option<Duration>,
+}
+
+impl RemoteCommandConfig {
+    /// Create a minimal remote command config.
+    pub fn new(name: impl Into<String>, command: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            command: command.into(),
+            work_dir: None,
+            stdin: None,
+            env: None,
+            expect_outputs: Vec::new(),
+            timeout: None,
+            provider_id: None,
+            max_concurrent: None,
+            max_wait: None,
+            max_retries: None,
+            retry_initial_delay: None,
+            retry_backoff_multiplier: None,
+            retry_max_delay: None,
+        }
+    }
+}
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
 #[allow(
@@ -193,6 +253,7 @@ impl Executor {
             retry_initial_delay,
             retry_backoff_multiplier: retry_backoff,
             retry_max_delay,
+            command_override: None,
         })?;
 
         // Resolve auth: config override > executor default > empty.
@@ -257,6 +318,85 @@ impl Executor {
                     error = %e,
                     "agent execution error"
                 );
+            }
+        }
+
+        result
+    }
+
+    /// Execute a raw shell command on shedul3r (no LLM involved).
+    ///
+    /// Submits a task with the given command string to shedul3r. The command
+    /// runs via `/bin/sh -c` on the remote machine. Supports work directory,
+    /// stdin data, and expected output files — same transport as `run_agent`
+    /// but without Claude Code wrapping.
+    ///
+    /// # Errors
+    /// Returns an error if YAML building, transport, or execution fails.
+    pub async fn run_remote_command(
+        &self,
+        config: &RemoteCommandConfig,
+    ) -> Result<AgentResult, PipelineError> {
+        use crate::agent::{execute_with_work_dir, format_duration, validate_work_dir};
+
+        tracing::info!(
+            name = %config.name,
+            command = %config.command,
+            work_dir = ?config.work_dir,
+            expect_outputs = ?config.expect_outputs,
+            "run_remote_command"
+        );
+
+        if let Some(ref dir) = config.work_dir {
+            validate_work_dir(dir)?;
+        }
+
+        let task_yaml = build_task_yaml(&TaskConfig {
+            name: config.name.clone(),
+            model: None,
+            timeout: config.timeout.map(format_duration),
+            provider_id: config.provider_id.clone(),
+            max_concurrent: config.max_concurrent,
+            max_wait: config.max_wait.map(format_duration),
+            max_retries: config.max_retries,
+            allowed_tools: None,
+            retry_initial_delay: config.retry_initial_delay.map(format_duration),
+            retry_backoff_multiplier: config.retry_backoff_multiplier,
+            retry_max_delay: config.retry_max_delay.map(format_duration),
+            command_override: Some(config.command.clone()),
+        })?;
+
+        let env = config.env.clone();
+        let stdin = config.stdin.as_deref().unwrap_or("");
+
+        let result = execute_with_work_dir(
+            self.sdk_client(),
+            !self.is_local(),
+            &task_yaml,
+            stdin,
+            config.work_dir.as_deref(),
+            &config.expect_outputs,
+            env,
+        )
+        .await;
+
+        match &result {
+            Ok(r) if r.success => {
+                tracing::info!(
+                    name = %config.name,
+                    output_len = r.output.len(),
+                    "remote command succeeded"
+                );
+            }
+            Ok(r) => {
+                tracing::warn!(
+                    name = %config.name,
+                    output_preview = %crate::utils::truncate_str(&r.output, 200),
+                    "remote command failed"
+                );
+            }
+            Err(e) => {
+                tracing::error!(name = %config.name, error = %e, "remote command error");
             }
         }
 

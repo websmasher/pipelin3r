@@ -46,6 +46,18 @@ pub enum PipelineError {
         /// Summary message.
         message: String,
     },
+    /// A verified step (doer-breaker-fixer) did not converge.
+    #[error(
+        "verified step '{name}' did not converge after {iterations} iterations: {final_issues}"
+    )]
+    VerificationFailed {
+        /// Name of the verified step.
+        name: String,
+        /// Number of fixer iterations executed.
+        iterations: usize,
+        /// Description of remaining issues.
+        final_issues: String,
+    },
     /// A validate-and-fix loop exhausted its iteration budget without converging.
     #[error(
         "validation '{name}' did not converge after {iterations} iterations: {remaining_errors}"

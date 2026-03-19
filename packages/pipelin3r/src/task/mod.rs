@@ -28,6 +28,10 @@ pub struct TaskConfig {
     pub retry_backoff_multiplier: Option<f64>,
     /// Maximum retry delay string (e.g., `"30s"`).
     pub retry_max_delay: Option<String>,
+    /// Raw command override. If set, used instead of building a Claude
+    /// Code invocation. This allows running arbitrary shell commands
+    /// through shedul3r without an LLM.
+    pub command_override: Option<String>,
 }
 
 /// Build a task YAML string from the given configuration, applying defaults.
@@ -45,13 +49,18 @@ pub fn build_task_yaml(config: &TaskConfig) -> Result<String, PipelineError> {
     let backoff_multiplier = config.retry_backoff_multiplier.unwrap_or(2.0);
     let max_delay = config.retry_max_delay.as_deref().unwrap_or("30s");
 
-    let mut command = format!(
-        "claude -p --model {model} --setting-sources \"\" --permission-mode bypassPermissions"
-    );
-    if let Some(tools) = &config.allowed_tools {
-        write!(&mut command, " --allowedTools {tools}")
-            .map_err(|e| PipelineError::Config(format!("failed to format command: {e}")))?;
-    }
+    let command = if let Some(ref cmd) = config.command_override {
+        cmd.clone()
+    } else {
+        let mut cmd = format!(
+            "claude -p --model {model} --setting-sources \"\" --permission-mode bypassPermissions"
+        );
+        if let Some(tools) = &config.allowed_tools {
+            write!(&mut cmd, " --allowedTools {tools}")
+                .map_err(|e| PipelineError::Config(format!("failed to format command: {e}")))?;
+        }
+        cmd
+    };
 
     let mut out = String::new();
     writeln!(&mut out, "name: {}", config.name)
