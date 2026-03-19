@@ -65,8 +65,18 @@ pub fn build_task_yaml(config: &TaskConfig) -> Result<String, PipelineError> {
     let mut out = String::new();
     writeln!(&mut out, "name: {}", config.name)
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
-    writeln!(&mut out, "command: {command}")
-        .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
+    // Multi-line commands need YAML literal block scalar (|).
+    if command.contains('\n') {
+        writeln!(&mut out, "command: |")
+            .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
+        for line in command.lines() {
+            writeln!(&mut out, "  {line}")
+                .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
+        }
+    } else {
+        writeln!(&mut out, "command: {command}")
+            .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
+    }
     writeln!(&mut out, "timeout: {timeout}")
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
     writeln!(&mut out, "provider-id: {provider_id}")
