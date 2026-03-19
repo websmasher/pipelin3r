@@ -24,11 +24,21 @@ enum State {
 struct CircuitState {
     /// Current state of the circuit.
     state: State,
-    /// Ring buffer of recent call results (`true` = success, `false` = failure).
-    results: VecDeque<bool>,
+    /// Ring buffer of recent call results: `(timestamp, success)`.
+    /// Entries older than the TTL are evicted before evaluation.
+    #[allow(
+        clippy::type_complexity,
+        reason = "simple tuple, type alias would reduce clarity"
+    )]
+    results: VecDeque<(Instant, bool)>,
     /// Timestamp when the circuit transitioned to `Open`.
     opened_at: Option<Instant>,
 }
+
+/// Multiplier for deriving the entry TTL from the open-state wait duration.
+/// Entries older than `wait_duration * TTL_MULTIPLIER` are considered stale
+/// and evicted from the sliding window.
+const TTL_MULTIPLIER: u32 = 4;
 
 impl CircuitState {
     const fn new() -> Self {
@@ -39,8 +49,18 @@ impl CircuitState {
         }
     }
 
-    /// Trim the results buffer to the given sliding window size.
-    fn trim_to_window(&mut self, window_size: u32) {
+    /// Remove entries older than the TTL, then trim to the window size.
+    fn trim_to_window(&mut self, window_size: u32, ttl: std::time::Duration) {
+        let now = Instant::now();
+        // Evict expired entries from the front (oldest first).
+        while let Some(&(ts, _)) = self.results.front() {
+            if now.duration_since(ts) > ttl {
+                let _discarded = self.results.pop_front();
+            } else {
+                break;
+            }
+        }
+        // Trim to window size.
         let max_len: usize = usize::try_from(window_size).unwrap_or(usize::MAX);
         while self.results.len() > max_len {
             let _discarded = self.results.pop_front();
@@ -52,7 +72,7 @@ impl CircuitState {
         if self.results.is_empty() {
             return 0.0;
         }
-        let failures = self.results.iter().filter(|r| !(**r)).count();
+        let failures = self.results.iter().filter(|r| !(r.1)).count();
         let total_f64 = f64::from(u32::try_from(self.results.len()).unwrap_or(u32::MAX));
         let failures_f64 = f64::from(u32::try_from(failures).unwrap_or(u32::MAX));
         // Division is safe: total_f64 > 0 guaranteed by the early return
@@ -152,8 +172,12 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
 
         let result = match circuit.state {
             State::Closed => {
-                // Evaluate failure rate to decide if we should open
-                circuit.trim_to_window(config.sliding_window_size);
+                // Evaluate failure rate to decide if we should open.
+                // Entry TTL = wait_duration * multiplier — entries older than
+                // this are stale and shouldn't influence the current decision.
+                #[allow(clippy::arithmetic_side_effects)] // bounded multiplier
+                let ttl = config.wait_duration_in_open_state * TTL_MULTIPLIER;
+                circuit.trim_to_window(config.sliding_window_size, ttl);
 
                 // Don't evaluate failure rate until we have enough data.
                 // A single failure out of 1 call = 100% and would
@@ -234,7 +258,7 @@ impl InMemoryCircuitBreaker {
                 }
             }
             State::Closed => {
-                circuit.results.push_back(success);
+                circuit.results.push_back((Instant::now(), success));
             }
             State::Open => {}
         }

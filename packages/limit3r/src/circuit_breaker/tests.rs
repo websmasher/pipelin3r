@@ -502,6 +502,51 @@ fn second_pass_only_evicts_closed() {
 }
 
 #[tokio::test]
+async fn stale_failures_expire_and_do_not_poison_window() {
+    // BUG FIX: Old failures in the sliding window should expire based on TTL.
+    // With wait_duration=50ms, TTL = 50ms * 4 = 200ms. Failures older than
+    // 200ms should be evicted before evaluating the failure rate.
+    let cb = InMemoryCircuitBreaker::new();
+    let config = test_config(50.0, 10, Duration::from_millis(50));
+    // TTL = 50ms * 4 = 200ms
+
+    // Initialize and record failures (but not enough to trip with min_calls)
+    cb.check_permitted("key-a", &config).unwrap();
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+
+    // These 5 failures are in the window. With min_calls = max(2, 10/2) = 5,
+    // the next check_permitted would trip (5/5 = 100% >= 50%).
+    let result = cb.check_permitted("key-a", &config);
+    assert!(result.is_err(), "should trip with 5 failures");
+
+    // Wait for the open state to expire (50ms) + half-open probe
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    cb.check_permitted("key-a", &config).unwrap(); // half-open probe
+    cb.record_success("key-a"); // close the circuit, clears window
+
+    // Now wait for the TTL to expire (200ms total from the failures)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Record new calls — these should NOT be poisoned by the old failures
+    cb.record_success("key-a");
+    cb.record_success("key-a");
+    cb.record_success("key-a");
+    cb.record_success("key-a");
+    cb.record_success("key-a");
+    cb.record_failure("key-a"); // 1 failure out of 6 = 16.7%
+
+    let fresh_check = cb.check_permitted("key-a", &config);
+    assert!(
+        fresh_check.is_ok(),
+        "stale failures should have expired — only 1/6 recent = 16.7% < 50%"
+    );
+}
+
+#[tokio::test]
 async fn reopens_after_failed_probe() {
     let cb = InMemoryCircuitBreaker::new();
     let config = test_config(50.0, 4, Duration::from_millis(50));
