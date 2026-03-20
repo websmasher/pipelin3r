@@ -11,10 +11,6 @@ use t3str_domain_types::{Language, T3strError};
 #[derive(Debug, Parser)]
 #[command(name = "t3str", version, about)]
 struct Cli {
-    /// Output format.
-    #[arg(long, default_value = "json")]
-    format: OutputFormat,
-
     /// Subcommand to execute.
     #[command(subcommand)]
     command: Command,
@@ -40,6 +36,9 @@ enum Command {
         /// Programming language of the repository.
         #[arg(long = "language")]
         lang: LanguageArg,
+        /// Output format.
+        #[arg(long, default_value = "json")]
+        format: OutputFormat,
         /// Optional topic filter to find relevant tests.
         #[arg(long)]
         topic: Option<String>,
@@ -52,6 +51,9 @@ enum Command {
         /// Programming language of the repository.
         #[arg(long = "language")]
         lang: LanguageArg,
+        /// Output format.
+        #[arg(long, default_value = "json")]
+        format: OutputFormat,
         /// Optional test filter expression.
         #[arg(long)]
         filter: Option<String>,
@@ -148,12 +150,18 @@ fn report_error(msg: &str) {
 /// Dispatch the parsed CLI command to the appropriate handler.
 async fn run_command(cli: &Cli) -> Result<(), T3strError> {
     match &cli.command {
-        Command::Extract { repo, lang, topic } => {
-            run_extract(repo, lang.0, topic.as_deref(), cli.format)
-        }
-        Command::Run { repo, lang, filter } => {
-            run_execute(repo, lang.0, filter.as_deref(), cli.format).await
-        }
+        Command::Extract {
+            repo,
+            lang,
+            format,
+            topic,
+        } => run_extract(repo, lang.0, topic.as_deref(), *format),
+        Command::Run {
+            repo,
+            lang,
+            format,
+            filter,
+        } => run_execute(repo, lang.0, filter.as_deref(), *format).await,
     }
 }
 
