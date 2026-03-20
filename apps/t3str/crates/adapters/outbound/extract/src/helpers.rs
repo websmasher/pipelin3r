@@ -142,6 +142,9 @@ fn find_capture_index(query: &tree_sitter::Query, name: &str) -> Option<u32> {
 ///
 /// Reads each file, extracts test names via tree-sitter query, applies the
 /// topic filter, and returns files that contain at least one test function.
+/// The topic filter matches against both file paths (case-insensitive) and
+/// function names — if a file's path contains the topic, all tests in that
+/// file are considered relevant.
 pub fn discover_in_files(
     files: &[PathBuf],
     language: Language,
@@ -159,7 +162,14 @@ pub fn discover_in_files(
             continue;
         }
 
-        let (filtered, relevant) = apply_filter(&functions, topic_filter);
+        // Check if the file path itself matches the topic filter.
+        let path_matches = topic_filter.is_some_and(|filter| {
+            let filter_lower = filter.to_lowercase();
+            let path_str = path.to_string_lossy().to_lowercase();
+            path_str.contains(&filter_lower)
+        });
+
+        let (filtered, relevant) = apply_filter(&functions, topic_filter, path_matches);
 
         if !filtered.is_empty() {
             results.push(TestFile {
@@ -177,14 +187,25 @@ pub fn discover_in_files(
 /// Filter function names by topic, returning `(filtered_names, is_relevant)`.
 ///
 /// If no filter is provided, all names are returned and `relevant` is `true`.
-/// With a filter, only names containing the filter substring match.
-fn apply_filter(functions: &[String], topic_filter: Option<&str>) -> FilteredNames {
+/// With a filter, only names containing the filter substring (case-insensitive)
+/// match. If `path_matches` is true (the file path already matched the topic),
+/// all functions are returned as relevant.
+fn apply_filter(
+    functions: &[String],
+    topic_filter: Option<&str>,
+    path_matches: bool,
+) -> FilteredNames {
     match topic_filter {
         None => (functions.to_vec(), true),
+        Some(_) if path_matches => {
+            // File path matched the topic — all tests in this file are relevant.
+            (functions.to_vec(), true)
+        }
         Some(filter) => {
+            let filter_lower = filter.to_lowercase();
             let matched: Vec<String> = functions
                 .iter()
-                .filter(|name| name.contains(filter))
+                .filter(|name| name.to_lowercase().contains(&filter_lower))
                 .cloned()
                 .collect();
             let relevant = !matched.is_empty();
