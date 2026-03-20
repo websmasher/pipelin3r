@@ -57,6 +57,9 @@ enum Command {
         /// Optional test filter expression.
         #[arg(long)]
         filter: Option<String>,
+        /// Write output to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -161,7 +164,8 @@ async fn run_command(cli: &Cli) -> Result<(), T3strError> {
             lang,
             format,
             filter,
-        } => run_execute(repo, lang.0, filter.as_deref(), *format).await,
+            output,
+        } => run_execute(repo, lang.0, filter.as_deref(), *format, output.as_deref()).await,
     }
 }
 
@@ -212,18 +216,23 @@ async fn run_execute(
     language: Language,
     filter: Option<&str>,
     format: OutputFormat,
+    output: Option<&std::path::Path>,
 ) -> Result<(), T3strError> {
     let executor = t3str_run::ProcessTestExecutor;
     let suite = t3str_commands::RunCommand::run(&executor, repo, language, filter).await?;
 
-    output_run_results(&suite, format)
+    output_run_results(&suite, format, output).await
 }
 
-/// Format and print test execution results.
+/// Format and output test execution results.
+///
+/// When `output` is `Some`, writes JSON to the specified file instead of
+/// stdout. This avoids stdout truncation for large test suites.
 #[allow(clippy::print_stdout)] // CLI output is the primary interface
-fn output_run_results(
+async fn output_run_results(
     suite: &t3str_domain_types::TestSuite,
     format: OutputFormat,
+    output: Option<&std::path::Path>,
 ) -> Result<(), T3strError> {
     match format {
         OutputFormat::Json => {
@@ -232,7 +241,15 @@ fn output_run_results(
                     format: "json".into(),
                     reason: e.to_string(),
                 })?;
-            println!("{json}");
+            if let Some(path) = output {
+                tokio::fs::write(path, &json).await.map_err(T3strError::Io)?;
+                println!("{}", serde_json::json!({
+                    "written_to": path.to_string_lossy(),
+                    "summary": suite.summary,
+                }));
+            } else {
+                println!("{json}");
+            }
         }
         OutputFormat::Human => {
             println!(
