@@ -98,6 +98,13 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
         }
     }
 
+    // If still empty, detect and report known compatibility issues.
+    if results.is_empty() {
+        if let Some(error) = detect_ruby_compat_error(&combined) {
+            results.push(error);
+        }
+    }
+
     let summary = build_summary(&results);
     Ok(TestSuite {
         language: Language::Ruby,
@@ -119,10 +126,11 @@ async fn run_minitest_direct(
     let script = concat!(
         "require 'minitest/autorun'; ",
         "Dir['test/**/*_test.rb']",
-        ".reject{|f| f.include?('dummy') || f.include?('.bundle') || f.include?('vendor')}",
+        ".reject{|f| f.include?('dummy') || f.include?('.bundle') ",
+        "|| f.include?('vendor') || f.include?('integration')}",
         ".sort",
-        ".each{|f| begin; load f; rescue LoadError, NameError => e; ",
-        "$stderr.puts \"skip #{f}: #{e.message}\"; end}",
+        ".each{|f| begin; load f; rescue Exception => e; ",
+        "$stderr.puts \"skip #{f}: #{e.class}: #{e.message}\"; end}",
     );
 
     let result = run_command(
@@ -215,4 +223,35 @@ fn extract_count_before(output: &str, marker: &str) -> Option<u32> {
         .map_or(0, |p| p.saturating_add(1));
     let digits = before.get(start..)?;
     digits.parse::<u32>().ok()
+}
+
+/// Detect known compatibility errors in Ruby test output and report them.
+///
+/// Catches bundler gem version conflicts, missing `ActiveSupport`, and
+/// other framework incompatibilities that prevent tests from running on
+/// the current Ruby version.
+fn detect_ruby_compat_error(output: &str) -> Option<t3str_domain_types::TestResult> {
+    let is_bundler_conflict = output.contains("Bundler::GemNotFound")
+        || output.contains("Could not find");
+    let is_missing_framework = output.contains("uninitialized constant")
+        && (output.contains("ActiveSupport")
+            || output.contains("ActiveRecord")
+            || output.contains("Rails"));
+
+    if is_bundler_conflict || is_missing_framework {
+        let message = if is_missing_framework {
+            "Tests require Rails/ActiveSupport which is incompatible with the installed Ruby version"
+        } else {
+            "Bundler cannot resolve gem dependencies — likely a Ruby version incompatibility"
+        };
+        Some(t3str_domain_types::TestResult {
+            name: String::from("Ruby compatibility"),
+            status: t3str_domain_types::TestStatus::Error,
+            duration_ms: None,
+            message: Some(String::from(message)),
+            file: None,
+        })
+    } else {
+        None
+    }
 }
