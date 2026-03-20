@@ -35,10 +35,10 @@ enum Command {
     /// Discover and extract test information from a repository.
     Extract {
         /// Path to the repository directory.
-        #[arg(long)]
+        #[arg(long = "repo-dir")]
         repo: PathBuf,
         /// Programming language of the repository.
-        #[arg(long)]
+        #[arg(long = "language")]
         lang: LanguageArg,
         /// Optional topic filter to find relevant tests.
         #[arg(long)]
@@ -47,10 +47,10 @@ enum Command {
     /// Execute tests in a repository and parse results.
     Run {
         /// Path to the repository directory.
-        #[arg(long)]
+        #[arg(long = "repo-dir")]
         repo: PathBuf,
         /// Programming language of the repository.
-        #[arg(long)]
+        #[arg(long = "language")]
         lang: LanguageArg,
         /// Optional test filter expression.
         #[arg(long)]
