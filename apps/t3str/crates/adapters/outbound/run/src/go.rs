@@ -24,6 +24,30 @@ const RAW_OUTPUT_MAX: usize = 2000;
 pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite, T3strError> {
     let gopath = repo_dir.join(".gopath");
     let gopath_str = gopath.to_string_lossy().into_owned();
+    let env_vars = [("GOPATH", gopath_str.as_str())];
+
+    // If no go.mod exists, initialise a temporary module so `go test` works.
+    if !repo_dir.join("go.mod").exists() {
+        let _ = run_command(
+            "go",
+            &["mod", "init", "temp_module"],
+            repo_dir,
+            &env_vars,
+            TIMEOUT_SECS,
+            Language::Go,
+        )
+        .await?;
+
+        let _ = run_command(
+            "go",
+            &["mod", "tidy"],
+            repo_dir,
+            &env_vars,
+            TIMEOUT_SECS,
+            Language::Go,
+        )
+        .await?;
+    }
 
     let mut args: Vec<&str> = vec!["test", "-json"];
 
@@ -33,8 +57,6 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
     }
 
     args.push("./...");
-
-    let env_vars = [("GOPATH", gopath_str.as_str())];
 
     let (stdout, stderr, _exit_code) =
         run_command("go", &args, repo_dir, &env_vars, TIMEOUT_SECS, Language::Go).await?;

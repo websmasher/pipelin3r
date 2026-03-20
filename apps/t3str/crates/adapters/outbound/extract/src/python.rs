@@ -31,15 +31,16 @@ pub fn discover(repo_dir: &Path, topic_filter: Option<&str>) -> DiscoverResult {
 
 /// Check if a Python file is a test file.
 ///
-/// Returns `true` if the filename starts with `test_` or ends with `_test`
-/// (before the `.py` extension), following pytest conventions.
+/// Returns `true` if the file is named `test.py`, or if the filename starts
+/// with `test_` or ends with `_test` (before the `.py` extension), following
+/// pytest conventions.
 fn is_test_file(path: &Path) -> bool {
     let stem = path
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or_default();
 
-    stem.starts_with("test_") || stem.ends_with("_test")
+    stem == "test" || stem.starts_with("test_") || stem.ends_with("_test")
 }
 
 #[cfg(test)]

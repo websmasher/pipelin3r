@@ -30,8 +30,8 @@ pub fn discover(repo_dir: &Path, topic_filter: Option<&str>) -> DiscoverResult {
 
 /// Check if a PHP file is a test file.
 ///
-/// Returns `true` if the filename ends with `Test.php` or starts with
-/// `test` and ends with `.phpt`.
+/// Returns `true` if the filename ends with `Test.php`, or starts with
+/// `test` or ends with `Test` and ends with `.phpt`.
 fn is_test_file(path: &Path) -> bool {
     let file_name = path
         .file_name()
@@ -52,7 +52,7 @@ fn is_test_file(path: &Path) -> bool {
     let is_phpunit = ext == "php" && stem.ends_with("Test");
 
     // test*.phpt — filename starts with test and ends with .phpt
-    let is_phpt = ext == "phpt" && file_name.starts_with("test");
+    let is_phpt = ext == "phpt" && (file_name.starts_with("test") || stem.ends_with("Test"));
 
     is_phpunit || is_phpt
 }

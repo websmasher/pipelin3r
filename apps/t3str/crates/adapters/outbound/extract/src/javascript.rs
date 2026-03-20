@@ -35,8 +35,9 @@ pub fn discover(repo_dir: &Path, topic_filter: Option<&str>) -> DiscoverResult {
 
 /// Check if a JavaScript/TypeScript file is a test file.
 ///
-/// Returns `true` if the filename contains `.test.` or `.spec.`, or if
-/// the file path contains a `__tests__/` or `/test/` directory.
+/// Returns `true` if the filename contains `.test.` or `.spec.`, if
+/// the file stem is exactly `test` or `tests`, or if the file path
+/// contains a `__tests__/`, `test/`, or `tests/` directory.
 fn is_test_file(path: &Path) -> bool {
     let file_name = path
         .file_name()
@@ -45,13 +46,18 @@ fn is_test_file(path: &Path) -> bool {
 
     let has_test_pattern = file_name.contains(".test.") || file_name.contains(".spec.");
 
+    let is_test_stem = {
+        let stem = path.file_stem().and_then(std::ffi::OsStr::to_str).unwrap_or_default();
+        stem == "test" || stem == "tests"
+    };
+
     let in_test_dir = path.components().any(|c| {
         c.as_os_str()
             .to_str()
-            .is_some_and(|s| s == "__tests__" || s == "test")
+            .is_some_and(|s| s == "__tests__" || s == "test" || s == "tests")
     });
 
-    has_test_pattern || in_test_dir
+    has_test_pattern || in_test_dir || is_test_stem
 }
 
 #[cfg(test)]

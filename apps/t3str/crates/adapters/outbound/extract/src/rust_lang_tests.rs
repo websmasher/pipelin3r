@@ -78,11 +78,15 @@ fn is_test_file_checks() {
         "filename contains test"
     );
     assert!(
-        !is_test_file(Path::new("/repo/src/main.rs")),
-        "main.rs is not a test file"
+        is_test_file(Path::new("/repo/src/main.rs")),
+        "src/ files are scanned for inline #[cfg(test)] modules"
     );
     assert!(
-        !is_test_file(Path::new("/repo/src/lib.rs")),
-        "lib.rs is not a test file"
+        is_test_file(Path::new("/repo/src/lib.rs")),
+        "src/ files are scanned for inline #[cfg(test)] modules"
+    );
+    assert!(
+        !is_test_file(Path::new("/repo/examples/demo.rs")),
+        "examples/ files are not test files"
     );
 }
