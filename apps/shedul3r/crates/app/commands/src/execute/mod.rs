@@ -292,9 +292,10 @@ where
 /// Claude Code sessions can produce megabytes of conversation log on stdout.
 /// Including all of that in the JSON response causes OOM under load and
 /// HTTP decode failures on the client. The response carries only the tail
-/// of stdout — enough for debugging — while the real work product lives
-/// in files the agent wrote to the work directory.
-const MAX_OUTPUT_BYTES: usize = 32_768; // 32 KB
+/// of stdout — enough for test suite JSON output. Increased from 32KB to
+/// 1MB to support large test suites (e.g., DomainDetective with 3000+ tests
+/// produces ~632KB JSON).
+const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MB
 
 /// Truncate a string to at most `max_bytes`, keeping the tail.
 ///
