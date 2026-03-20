@@ -74,7 +74,9 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
 
     // If no go.mod exists, initialise a module so `go test` works.
     // Use the actual package name from source files so import paths resolve.
+    let mut created_gomod = false;
     if !repo_dir.join("go.mod").exists() {
+        created_gomod = true;
         let module_path = detect_module_path(repo_dir).await;
         let _ = run_command(
             "go",
@@ -98,6 +100,12 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
     }
 
     let mut args: Vec<&str> = vec!["test", "-json"];
+
+    // Disable `go vet` for repos without go.mod — Go 1.24 runs vet by
+    // default and rejects old patterns like non-constant format strings.
+    if created_gomod {
+        args.insert(2, "-vet=off");
+    }
 
     if let Some(f) = filter {
         args.push("-run");

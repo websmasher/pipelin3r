@@ -152,6 +152,14 @@ async fn run_phpunit(
         results = parse_phpunit_text_output(&output);
     }
 
+    // Fix 3: If still empty and output indicates a compatibility error, report it
+    // instead of silently returning zero results.
+    if results.is_empty() {
+        if let Some(error_result) = detect_compatibility_error(&output) {
+            results.push(error_result);
+        }
+    }
+
     Ok((results, output))
 }
 
@@ -237,6 +245,35 @@ fn parse_phpunit_text_output(output: &str) -> Vec<t3str_domain_types::TestResult
     }
 
     Vec::new()
+}
+
+/// Detect known compatibility errors in `PHPUnit` output and create an error result.
+///
+/// When `PHPUnit` 11 encounters test files using the legacy `PHPUnit_Framework_TestCase`
+/// class (`PHPUnit` 3.x/4.x API), it crashes with a fatal error. This function detects
+/// that situation and returns a descriptive error result instead of silent empty results.
+fn detect_compatibility_error(output: &str) -> Option<t3str_domain_types::TestResult> {
+    let is_legacy_api = output.contains("PHPUnit_Framework_TestCase")
+        || output.contains("PHPUnit_Framework_Test");
+    let has_fatal = output.contains("Fatal error:");
+
+    if is_legacy_api || has_fatal {
+        let message = if is_legacy_api {
+            "Test uses legacy PHPUnit API (PHPUnit_Framework_TestCase) \
+             incompatible with PHPUnit 11"
+        } else {
+            "PHPUnit execution failed with a fatal error"
+        };
+        Some(t3str_domain_types::TestResult {
+            name: String::from("PHPUnit compatibility"),
+            status: t3str_domain_types::TestStatus::Error,
+            duration_ms: None,
+            message: Some(String::from(message)),
+            file: None,
+        })
+    } else {
+        None
+    }
 }
 
 /// Extract the test count from `OK (N test` in `PHPUnit` output.
