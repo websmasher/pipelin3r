@@ -1,0 +1,127 @@
+name: Release t3str binary
+
+on:
+  push:
+    branches: [production]
+
+jobs:
+  check-version:
+    name: Check for new version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      tag: ${{ steps.extract.outputs.tag }}
+      new_release: ${{ steps.check_tag.outputs.new_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from Cargo.toml
+        id: extract
+        run: |
+          VERSION=$(grep -m1 '^version' apps/t3str/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=t3str-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "t3str-v${{ steps.extract.outputs.version }}" >/dev/null 2>&1; then
+            echo "new_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check-version
+    if: needs.check-version.outputs.new_release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: t3str-linux-x86_64.tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: t3str-linux-musl-x86_64.tar.gz
+            musl: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: t3str-linux-arm64.tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: t3str-darwin-x86_64.tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: t3str-darwin-arm64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/t3str
+
+      - name: Install cross-compilation tools
+        if: matrix.cross == true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Install musl tools
+        if: matrix.musl == true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        working-directory: apps/t3str
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          cp apps/t3str/target/${{ matrix.target }}/release/t3str dist/
+          cd dist
+          tar czf ../${{ matrix.archive }} t3str
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  release:
+    name: Create GitHub Release
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.check-version.outputs.tag }}" \
+            --title "t3str ${{ needs.check-version.outputs.version }}" \
+            --generate-notes \
+            artifacts/t3str-linux-x86_64.tar.gz/t3str-linux-x86_64.tar.gz \
+            artifacts/t3str-linux-musl-x86_64.tar.gz/t3str-linux-musl-x86_64.tar.gz \
+            artifacts/t3str-linux-arm64.tar.gz/t3str-linux-arm64.tar.gz \
+            artifacts/t3str-darwin-x86_64.tar.gz/t3str-darwin-x86_64.tar.gz \
+            artifacts/t3str-darwin-arm64.tar.gz/t3str-darwin-arm64.tar.gz
