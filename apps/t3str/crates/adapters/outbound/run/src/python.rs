@@ -21,8 +21,10 @@ const RAW_OUTPUT_MAX: usize = 2000;
 ///
 /// Runs `pytest --junitxml=<path> -v` and parses the `JUnit` XML output.
 /// If a virtualenv exists at `.venv/bin/python3`, it is used instead of
-/// the system Python. When pytest reports exit code 5 (no tests collected),
-/// a second attempt discovers test files explicitly via `find`.
+/// the system Python. When pytest collects no tests — either exit code 5
+/// (no tests collected) or a successful run that produces zero results in
+/// the `JUnit` XML — a second attempt discovers test files explicitly via
+/// `find`.
 pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite, T3strError> {
     let venv_python = repo_dir.join(".venv/bin/python3");
     let py = if venv_python.exists() {
@@ -42,17 +44,22 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
         args.push(f);
     }
 
-    let (stdout, stderr, exit_code) =
+    let (stdout, stderr, _exit_code) =
         run_command(&py, &args, repo_dir, &[], TIMEOUT_SECS, Language::Python).await?;
 
     let mut combined = stdout.clone();
     combined.push('\n');
     combined.push_str(&stderr);
 
-    // Exit code 5 means no tests were collected by default discovery.
-    // Try explicit file discovery as a fallback.
-    if exit_code == 5 {
-        let retry_result = retry_with_explicit_files(&py, &junitxml_flag, repo_dir, filter).await;
+    // Parse JUnit XML output file from the initial run.
+    let mut results = parse_and_remove_xml(&output_file).await;
+
+    // Retry with explicit file discovery when no tests were collected.
+    // This covers exit code 5 (pytest found nothing) AND exit code 0 with
+    // zero results (project pytest config restricts discovery patterns).
+    if results.is_empty() {
+        let retry_result =
+            retry_with_explicit_files(&py, &junitxml_flag, repo_dir, filter).await;
 
         if let Ok((extra_stdout, extra_stderr)) = retry_result {
             combined.push('\n');
@@ -60,21 +67,13 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
             combined.push('\n');
             combined.push_str(&extra_stderr);
         }
+
+        // Re-parse — the retry overwrites the same JUnit XML path.
+        let retry_results = parse_and_remove_xml(&output_file).await;
+        if !retry_results.is_empty() {
+            results = retry_results;
+        }
     }
-
-    // Parse JUnit XML output file
-    let results = if output_file.exists() {
-        let xml_content = tokio::fs::read_to_string(&output_file)
-            .await
-            .map_err(T3strError::Io)?;
-
-        // Clean up the output file
-        let _ignore = tokio::fs::remove_file(&output_file).await;
-
-        junit_xml::parse(&xml_content).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
 
     let summary = build_summary(&results);
 
@@ -85,6 +84,22 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
         summary,
         raw_output: Some(truncate_output(&combined, RAW_OUTPUT_MAX)),
     })
+}
+
+/// Parse a `JUnit` XML file and remove it afterwards.
+///
+/// Returns an empty `Vec` when the file does not exist or cannot be read.
+async fn parse_and_remove_xml(
+    output_file: &Path,
+) -> Vec<t3str_domain_types::TestResult> {
+    let Ok(xml_content) = tokio::fs::read_to_string(output_file).await else {
+        return Vec::new();
+    };
+
+    // Clean up the output file regardless of parse outcome.
+    let _ignore = tokio::fs::remove_file(output_file).await;
+
+    junit_xml::parse(&xml_content).unwrap_or_default()
 }
 
 /// Retry pytest with explicitly discovered test files.
@@ -99,7 +114,23 @@ async fn retry_with_explicit_files(
     // Find test files in common directories
     let (found_stdout, _, _) = run_command(
         "find",
-        &[".", "-maxdepth", "4", "-name", "test_*.py", "-type", "f"],
+        &[
+            ".",
+            "-maxdepth",
+            "4",
+            "-type",
+            "f",
+            "(",
+            "-name",
+            "test_*.py",
+            "-o",
+            "-name",
+            "*_test.py",
+            "-o",
+            "-name",
+            "test.py",
+            ")",
+        ],
         repo_dir,
         &[],
         30,

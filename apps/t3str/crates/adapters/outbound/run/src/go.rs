@@ -10,6 +10,52 @@ use t3str_domain_types::{Language, T3strError, TestSuite};
 use crate::helpers::{build_summary, run_command, truncate_output};
 use crate::parsers::go_json;
 
+/// Detect the Go module path from source files in the given directory.
+///
+/// Reads the first `.go` file found at the top level of `repo_dir`, extracts
+/// the `package <name>` declaration, and returns it as the module path. Falls
+/// back to the directory name if no `.go` file or package declaration is found.
+async fn detect_module_path(repo_dir: &Path) -> String {
+    let fallback = repo_dir
+        .file_name()
+        .map_or_else(|| String::from("module"), |n| n.to_string_lossy().into_owned());
+
+    let Ok(mut entries) = tokio::fs::read_dir(repo_dir).await else {
+        return fallback;
+    };
+
+    loop {
+        let Ok(maybe_entry) = entries.next_entry().await else {
+            break;
+        };
+        let Some(entry) = maybe_entry else {
+            break;
+        };
+        let path = entry.path();
+        let is_go = path.extension().is_some_and(|ext| ext == "go");
+        if !is_go || !path.is_file() {
+            continue;
+        }
+
+        let Ok(contents) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("package ") {
+                if let Some(name) = trimmed.split_whitespace().nth(1) {
+                    if !name.is_empty() {
+                        return name.to_owned();
+                    }
+                }
+            }
+        }
+    }
+
+    fallback
+}
+
 /// Timeout for Go test execution.
 const TIMEOUT_SECS: u64 = 300;
 
@@ -26,11 +72,13 @@ pub async fn execute(repo_dir: &Path, filter: Option<&str>) -> Result<TestSuite,
     let gopath_str = gopath.to_string_lossy().into_owned();
     let env_vars = [("GOPATH", gopath_str.as_str())];
 
-    // If no go.mod exists, initialise a temporary module so `go test` works.
+    // If no go.mod exists, initialise a module so `go test` works.
+    // Use the actual package name from source files so import paths resolve.
     if !repo_dir.join("go.mod").exists() {
+        let module_path = detect_module_path(repo_dir).await;
         let _ = run_command(
             "go",
-            &["mod", "init", "temp_module"],
+            &["mod", "init", &module_path],
             repo_dir,
             &env_vars,
             TIMEOUT_SECS,
