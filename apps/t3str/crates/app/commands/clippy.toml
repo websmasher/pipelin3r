@@ -1,0 +1,71 @@
+# =============================================================================
+# clippy.toml -- App/commands layer guardrails (t3str-commands)
+# =============================================================================
+# Commands orchestrate use cases via port traits: no I/O, no env vars,
+# no process spawning, no filesystem access, no blocking.
+
+# =============================================================================
+# THRESHOLDS
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+
+disallowed-methods = [
+    # ── Environment variable access ──
+    { path = "std::env::var", reason = "Use centralized config -- direct env access scatters configuration" },
+    { path = "std::env::var_os", reason = "Use centralized config -- direct env access scatters configuration" },
+    { path = "std::env::vars", reason = "Use centralized config -- direct env access scatters configuration" },
+
+    # ── Environment variable mutation ──
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # ── Process control ──
+    { path = "std::process::exit", reason = "Use Result propagation" },
+    { path = "std::process::Command::new", reason = "Process spawning is an adapter concern" },
+
+    # ── Blocking ──
+    { path = "std::thread::sleep", reason = "Use async sleep or avoid blocking" },
+
+    # ── Filesystem operations ──
+    { path = "std::fs::read_to_string", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::read", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::read_dir", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::read_link", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::write", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::remove_file", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::remove_dir_all", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::create_dir_all", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::rename", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::copy", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::metadata", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::symlink_metadata", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::canonicalize", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::set_permissions", reason = "Filesystem access is an adapter concern" },
+    { path = "std::fs::hard_link", reason = "Filesystem access is an adapter concern" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES
+# =============================================================================
+
+disallowed-types = [
+    # ── Collections ──
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # ── Synchronization ──
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # ── Filesystem ──
+    { path = "std::fs::File", reason = "File I/O is an adapter concern" },
+]

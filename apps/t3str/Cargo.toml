@@ -1,0 +1,132 @@
+[workspace]
+members = [
+    "crates/domain/types",
+    "crates/ports/outbound/discovery",
+    "crates/app/commands",
+    "crates/adapters/outbound/extract",
+    "crates/adapters/outbound/run",
+    "crates/adapters/inbound/cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.lints.rust]
+warnings = "deny"                    # Deny all unlisted warnings (equivalent to -Dwarnings)
+unsafe_code = "forbid"
+dead_code = "deny"
+unused_results = "deny"
+unused_crate_dependencies = "deny"
+missing_docs = "deny"                     # All public items must have doc comments
+missing_debug_implementations = "warn"  # Helps catch types that are hard to debug
+
+[workspace.lints.clippy]
+# ── Groups ──────────────────────────────────────────────────
+# Priority -1 ensures group-level settings are overridden by
+# the specific lint settings below (higher priority wins).
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Experimental but useful catches. May need per-lint #[allow] for false positives.
+nursery = { level = "deny", priority = -1 }
+
+# ── Error handling (no silent crashes) ──────────────────────
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+
+# ── Output discipline ──────────────────────────────────────
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# ── Disallowed methods/types (enforces clippy.toml) ────────
+disallowed_methods = "deny"
+disallowed_types = "deny"
+
+# ── Panic backdoors (bypass unwrap/expect/panic bans) ─────
+indexing_slicing = "deny"          # vec[i] panics — use .get(i) instead
+string_slice = "deny"             # &s[0..5] panics on non-ASCII — use .get() or .chars()
+arithmetic_side_effects = "deny"  # a + b overflows — use .checked_add() / .saturating_add()
+
+# ── Variable hygiene ─────────────────────────────────────
+shadow_unrelated = "deny"          # let x = 5; let x = "str"; — use different name
+missing_assert_message = "deny"    # assert!(x) — require assert!(x, "reason")
+
+# ── Encapsulation ────────────────────────────────────────
+partial_pub_fields = "deny"        # struct with mix of pub/private fields — all or nothing
+
+# ── Allocation awareness ──────────────────────────────────
+str_to_string = "deny"
+implicit_clone = "deny"
+
+# ── Type safety ─────────────────────────────────────────────
+as_conversions = "deny"
+float_cmp = "deny"
+lossy_float_literal = "deny"
+
+# ── Pattern exhaustiveness ──────────────────────────────────
+wildcard_enum_match_arm = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+
+# ── Size guards ────────────────────────────────────────────
+large_stack_arrays = "deny"
+
+# ── Code hygiene ────────────────────────────────────────────
+needless_pass_by_value = "deny"
+redundant_else = "deny"
+large_futures = "deny"
+
+# ── Idiomatic style ──────────────────────────────────────────
+semicolon_if_nothing_returned = "deny"
+redundant_closure_for_method_calls = "deny"
+map_unwrap_or = "deny"
+verbose_file_reads = "deny"
+
+# ── Pedantic/nursery overrides ────────────────────────────
+# Genuinely unavoidable style preferences
+missing_docs_in_private_items = "allow"   # Private items don't need doc comments
+module_name_repetitions = "allow"         # UserError in user module is fine
+must_use_candidate = "allow"              # Not every function needs #[must_use]
+option_if_let_else = "allow"              # if let Some(x) is often clearer than map_or
+empty_line_after_doc_comments = "allow"   # Stylistic, not worth enforcing
+single_match_else = "allow"              # match with else is sometimes clearer than if let
+ref_option_ref = "allow"                 # &Option<&T> is valid in function signatures
+trivially_copy_pass_by_ref = "allow"     # &bool, &i32 in params is fine
+multiple_crate_versions = "allow"        # Defer to deny.toml for duplicate version checking
+
+[workspace.dependencies]
+# Shared dependency versions — all crates inherit these via `dep.workspace = true`
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+parking_lot = "0.12"
+clap = { version = "4", features = ["derive"] }
+quick-xml = "0.37"
+tree-sitter = "0.24"
+streaming-iterator = "0.1"
+tree-sitter-rust = "0.23.2"
+tree-sitter-python = "0.23.6"
+tree-sitter-go = "0.23.4"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-php = "0.23.5"
+tree-sitter-c-sharp = "0.23.1"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-java = "0.23.5"
+tree-sitter-elixir = "0.3.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+panic = "abort"
+codegen-units = 1

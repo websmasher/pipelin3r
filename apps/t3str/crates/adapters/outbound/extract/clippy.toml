@@ -1,0 +1,55 @@
+# =============================================================================
+# clippy.toml -- Extract adapter guardrails (t3str-extract)
+# =============================================================================
+# The extract adapter reads source files for AST parsing via tree-sitter.
+# It must NOT spawn processes, mutate environment, or use global state.
+# File reading (std::fs::read_to_string, etc.) is ALLOWED -- needed for parsing.
+
+# =============================================================================
+# THRESHOLDS
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+
+disallowed-methods = [
+    # ── Environment variable access ──
+    { path = "std::env::var", reason = "Use centralized config -- extract adapter must not access environment" },
+    { path = "std::env::var_os", reason = "Use centralized config -- extract adapter must not access environment" },
+    { path = "std::env::vars", reason = "Use centralized config -- extract adapter must not access environment" },
+
+    # ── Environment variable mutation ──
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # ── Process control ──
+    { path = "std::process::exit", reason = "Use Result propagation -- process::exit skips destructors" },
+    { path = "std::process::Command::new", reason = "Process spawning is a run adapter concern, not extract -- extract only reads files" },
+
+    # ── Blocking ──
+    { path = "std::thread::sleep", reason = "Use async sleep or avoid blocking -- extract adapter should not block" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES
+# =============================================================================
+
+disallowed-types = [
+    # ── Collections ──
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # ── Synchronization ──
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # ── Filesystem ──
+    { path = "std::fs::File", reason = "Use std::fs::read_to_string instead -- no direct file handle construction" },
+]

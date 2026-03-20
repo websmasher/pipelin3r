@@ -1,0 +1,26 @@
+[package]
+name = "t3str-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Multi-language test discovery and execution CLI"
+license = "MIT"
+repository = "https://github.com/ArtOfContext/pipelin3r"
+
+[[bin]]
+name = "t3str"
+path = "src/main.rs"
+
+[dependencies]
+t3str-domain-types = { path = "../../../domain/types" }
+t3str-commands = { path = "../../../app/commands" }
+t3str-extract = { path = "../../outbound/extract" }
+t3str-run = { path = "../../outbound/run" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

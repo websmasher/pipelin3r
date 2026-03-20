@@ -1,0 +1,62 @@
+# =============================================================================
+# clippy.toml -- Static analysis guardrails for the t3str-run adapter
+# =============================================================================
+# Run adapter: spawns test runner processes and reads output files.
+# Allows std::process::Command and std::fs methods (needed for execution).
+# Bans env access, process::exit, thread::sleep, and non-deterministic types.
+
+# =============================================================================
+# THRESHOLDS
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+
+disallowed-methods = [
+    # -------------------------------------------------------------------------
+    # Environment variable access -- use centralized config
+    # -------------------------------------------------------------------------
+    { path = "std::env::var", reason = "Use centralized config -- direct env access scatters configuration and is untestable" },
+    { path = "std::env::var_os", reason = "Use centralized config -- direct env access scatters configuration and is untestable" },
+    { path = "std::env::vars", reason = "Use centralized config -- direct env access scatters configuration and is untestable" },
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -------------------------------------------------------------------------
+    # Process control -- use Result propagation
+    # -------------------------------------------------------------------------
+    { path = "std::process::exit", reason = "Use Result propagation -- process::exit skips destructors" },
+
+    # -------------------------------------------------------------------------
+    # Blocking sleep -- use tokio::time::sleep
+    # -------------------------------------------------------------------------
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep -- blocking sleep in async context starves the runtime" },
+
+    # NOTE: std::process::Command::new is NOT banned -- this adapter needs to spawn test runner processes
+    # NOTE: std::fs methods are NOT banned -- this adapter needs to read test output files
+]
+
+# =============================================================================
+# DISALLOWED TYPES
+# =============================================================================
+
+disallowed-types = [
+    # -------------------------------------------------------------------------
+    # Collections -- use deterministic BTree variants
+    # -------------------------------------------------------------------------
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -------------------------------------------------------------------------
+    # Synchronization -- use parking_lot (no poisoning)
+    # -------------------------------------------------------------------------
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+]

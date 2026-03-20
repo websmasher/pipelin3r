@@ -47,8 +47,8 @@ deny = [
     # error responses, type-erased errors prevent matching on variants.
     { name = "anyhow", wrappers = [] },
 
-    # --- Web framework: standardize on actix-web ---
-    { name = "axum", wrappers = [] },
+    # --- Web framework: standardize on axum ---
+    { name = "actix-web", wrappers = [] },
     { name = "rocket", wrappers = [] },
     { name = "warp", wrappers = [] },
     { name = "poem", wrappers = [] },
@@ -65,6 +65,14 @@ deny = [
     { name = "rmp-serde", wrappers = [] },
     { name = "prost", wrappers = [] },
     { name = "flatbuffers", wrappers = [] },
+    # --- Parsing: use structured parsers, never regex ---
+    { name = "regex", wrappers = ["tree-sitter", "globset", "ignore"] }, # EXCEPTION: transitive only
+    { name = "fancy-regex", wrappers = [] },
+    { name = "onig", wrappers = [] },
+    { name = "pcre2", wrappers = [] },
+    { name = "grep-cli", wrappers = [] },
+    { name = "grep-regex", wrappers = [] },
+    { name = "grep-matcher", wrappers = [] },
 ]
 
 # Feature-level bans — prevent agents from enabling kitchen-sink features

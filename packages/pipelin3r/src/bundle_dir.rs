@@ -22,6 +22,7 @@ use crate::error::PipelineError;
 /// // use bundle.path() to read/write files
 /// // directory is removed when `bundle` goes out of scope
 /// ```
+#[derive(Debug)]
 pub struct BundleDir {
     /// Absolute path to the created directory.
     path: PathBuf,

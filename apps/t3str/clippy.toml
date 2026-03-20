@@ -1,0 +1,77 @@
+# =============================================================================
+# clippy.toml -- Static analysis guardrails for the t3str CLI tool
+# =============================================================================
+# This file configures thresholds, banned methods, and banned types that Clippy
+# enforces at compile time. It works in conjunction with [lints.clippy] in
+# Cargo.toml, which must include:
+#   disallowed_methods = "deny"
+#   disallowed_types = "deny"
+
+# =============================================================================
+# THRESHOLDS
+# =============================================================================
+
+# Maximum lines per function before clippy::too_many_lines fires.
+too-many-lines-threshold = 75
+
+# Maximum cognitive complexity score per function.
+cognitive-complexity-threshold = 15
+
+# Maximum number of function parameters.
+too-many-arguments-threshold = 7
+
+# Maximum type nesting depth (e.g., Result<Option<Vec<Box<dyn Trait>>>>).
+type-complexity-threshold = 75
+
+# Maximum number of bool fields in a struct before clippy::struct_excessive_bools fires.
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+# Every entry requires a `reason` field. When a developer (or agent) uses a
+# banned method, Clippy prints the reason as the error message.
+
+disallowed-methods = [
+    # -------------------------------------------------------------------------
+    # Environment variable access -- use centralized config module
+    # -------------------------------------------------------------------------
+    { path = "std::env::var", reason = "Use the centralized config module -- direct env access scatters configuration and is untestable" },
+    { path = "std::env::var_os", reason = "Use the centralized config module -- direct env access scatters configuration and is untestable" },
+    { path = "std::env::vars", reason = "Use the centralized config module -- direct env access scatters configuration and is untestable" },
+
+    # -------------------------------------------------------------------------
+    # Environment variable mutation -- unsafe in multi-threaded contexts
+    # -------------------------------------------------------------------------
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -------------------------------------------------------------------------
+    # Process control -- use proper error propagation
+    # -------------------------------------------------------------------------
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result from main) -- process::exit skips destructors" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES
+# =============================================================================
+# Banned types with required alternatives.
+
+disallowed-types = [
+    # -------------------------------------------------------------------------
+    # Collections -- use deterministic BTree variants
+    # -------------------------------------------------------------------------
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -------------------------------------------------------------------------
+    # Synchronization -- use parking_lot (no poisoning)
+    # -------------------------------------------------------------------------
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -------------------------------------------------------------------------
+    # Filesystem -- use centralized io module
+    # -------------------------------------------------------------------------
+    { path = "std::fs::File", reason = "Use centralized io module -- no direct file handle construction" },
+]

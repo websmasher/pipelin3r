@@ -1,0 +1,16 @@
+[package]
+name = "t3str-commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Application commands for t3str test orchestration"
+license = "MIT"
+repository = "https://github.com/ArtOfContext/pipelin3r"
+
+[dependencies]
+t3str-domain-types = { path = "../../domain/types" }
+t3str-discovery-port = { path = "../../ports/outbound/discovery" }
+
+[lints]
+workspace = true

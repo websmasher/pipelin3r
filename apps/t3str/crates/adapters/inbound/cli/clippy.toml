@@ -1,0 +1,62 @@
+# =============================================================================
+# clippy.toml -- Static analysis guardrails for t3str-cli (composition root)
+# =============================================================================
+# This is the binary crate / composition root. It wires adapters to commands
+# and handles CLI I/O. Bans reflect the CLI layer's responsibilities.
+
+# =============================================================================
+# THRESHOLDS
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+
+disallowed-methods = [
+    # -------------------------------------------------------------------------
+    # Environment variable access -- use centralized config / CLI args
+    # -------------------------------------------------------------------------
+    { path = "std::env::var", reason = "Use centralized config -- direct env access scatters configuration" },
+    { path = "std::env::var_os", reason = "Use centralized config -- direct env access scatters configuration" },
+    { path = "std::env::vars", reason = "Use centralized config -- direct env access scatters configuration" },
+
+    # -------------------------------------------------------------------------
+    # Environment variable mutation -- unsafe in multi-threaded contexts
+    # -------------------------------------------------------------------------
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -------------------------------------------------------------------------
+    # Process control -- use ExitCode instead
+    # -------------------------------------------------------------------------
+    { path = "std::process::exit", reason = "Use std::process::ExitCode -- process::exit skips destructors" },
+
+    # -------------------------------------------------------------------------
+    # Blocking sleep -- use async sleep
+    # -------------------------------------------------------------------------
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep -- blocking sleep in async context causes deadlocks" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES
+# =============================================================================
+
+disallowed-types = [
+    # -------------------------------------------------------------------------
+    # Collections -- use deterministic BTree variants
+    # -------------------------------------------------------------------------
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -------------------------------------------------------------------------
+    # Synchronization -- use parking_lot (no poisoning)
+    # -------------------------------------------------------------------------
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+]

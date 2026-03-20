@@ -1,0 +1,71 @@
+# =============================================================================
+# clippy.toml -- Domain layer guardrails (t3str-domain-types)
+# =============================================================================
+# Domain types must be pure: no I/O, no env vars, no process spawning,
+# no filesystem access, no blocking, no global state.
+
+# =============================================================================
+# THRESHOLDS
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+
+disallowed-methods = [
+    # ── Environment variable access ──
+    { path = "std::env::var", reason = "Domain layer must not access environment -- use config module" },
+    { path = "std::env::var_os", reason = "Domain layer must not access environment -- use config module" },
+    { path = "std::env::vars", reason = "Domain layer must not access environment -- use config module" },
+
+    # ── Environment variable mutation ──
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # ── Process control ──
+    { path = "std::process::exit", reason = "Domain layer must not control process lifecycle -- return Result" },
+    { path = "std::process::Command::new", reason = "Domain layer must not spawn processes -- use adapter layer" },
+
+    # ── Blocking ──
+    { path = "std::thread::sleep", reason = "Domain layer must not block -- pure data and logic only" },
+
+    # ── Filesystem operations ──
+    { path = "std::fs::read_to_string", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::read", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::read_dir", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::read_link", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::write", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::remove_file", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::remove_dir_all", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::create_dir_all", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::rename", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::copy", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::metadata", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::symlink_metadata", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::canonicalize", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::set_permissions", reason = "Domain layer must not do I/O -- use adapter layer" },
+    { path = "std::fs::hard_link", reason = "Domain layer must not do I/O -- use adapter layer" },
+]
+
+# =============================================================================
+# DISALLOWED TYPES
+# =============================================================================
+
+disallowed-types = [
+    # ── Collections ──
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # ── Synchronization ──
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # ── Filesystem ──
+    { path = "std::fs::File", reason = "Domain layer must not do I/O -- no direct file handle construction" },
+]

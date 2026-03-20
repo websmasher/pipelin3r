@@ -1,5 +1,8 @@
 /target/
 /apps/shedul3r/target/
+/apps/t3str/target/
+/apps/t3str/target-t3str/
+/apps/t3str/.cargo-home/
 .gitnexus
 mutants.out/
 .env.local

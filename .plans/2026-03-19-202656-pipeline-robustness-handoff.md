@@ -17,7 +17,7 @@ The pipeline must work for ANY parser library (not just security.txt) across ~70
 1. **Every library gets its own isolated environment.** No shared site-packages, no shared GOPATH, no shared cargo registry. Each library's install + test runs in its own sandbox.
 2. **Maximum concurrency everywhere.** If things don't depend on each other, they run at the same time. The only limit is what the worker machine can physically handle.
 3. **Auto-healing.** If a dependency is missing, install it. If a test runner isn't found, try alternatives. If a version is wrong, install the right one. Never crash on a fixable problem.
-4. **Idempotent.** If golden files already exist for a library, skip it. If a clone already exists, skip it. Only redo work that needs redoing.
+4. **Fast through parallelism, not skipping.** Never skip a step because output exists — it might be broken. Instead, make every step fast by running all libraries in parallel. Individual operations are naturally idempotent (git clone checks if dir exists, pip is a no-op on installed packages), but the step itself always runs.
 5. **One-shot.** Run `--step all` and walk away. Come back to golden files.
 
 ---
@@ -277,17 +277,17 @@ Replace the generated Python script with per-language test runner scripts. Each 
 - A single Python parsing script (also in the work_dir) reads the structured output and writes `test-results.json`
 - The parsing handles each format (JUnit XML, JSON lines, Jest JSON, TRX XML, RSpec JSON, cargo verbose)
 
-### 4. Idempotency
+### 4. No skip logic — make it fast instead
 
-Add to each step:
-```rust
-// Skip if already done
-let golden_path = gt_dir.join(&lib_key).join("test-results.json");
-if golden_path.is_file() {
-    tracing::info!("[step 06] Skipping {} (golden files exist)", lib_key);
-    continue;
-}
-```
+Do NOT skip steps based on existing output files. If something was broken on a previous run, skipping means it stays broken forever. Instead, always re-run everything but make it fast enough that it doesn't matter:
+
+- `git clone --depth 1` is a no-op if the directory exists (the `if [ -d ... ]` check)
+- `pip install` is a no-op if packages are already installed
+- `cargo fetch` uses the local cache
+- `bundle install` uses the local cache
+- `npm install` uses the local cache
+
+Speed comes from parallelization, not from skipping. Every run produces fresh golden files.
 
 ### 5. Auto-healing in the Dockerfile
 

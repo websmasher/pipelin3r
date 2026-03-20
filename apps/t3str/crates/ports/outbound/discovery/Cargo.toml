@@ -1,0 +1,15 @@
+[package]
+name = "t3str-discovery-port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Discovery and execution port traits for t3str"
+license = "MIT"
+repository = "https://github.com/ArtOfContext/pipelin3r"
+
+[dependencies]
+t3str-domain-types = { path = "../../../domain/types" }
+
+[lints]
+workspace = true

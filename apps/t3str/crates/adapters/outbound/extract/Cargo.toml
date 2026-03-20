@@ -1,0 +1,27 @@
+[package]
+name = "t3str-extract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Tree-sitter based test discovery adapter for t3str"
+license = "MIT"
+repository = "https://github.com/ArtOfContext/pipelin3r"
+
+[dependencies]
+t3str-domain-types = { path = "../../../domain/types" }
+t3str-discovery-port = { path = "../../../ports/outbound/discovery" }
+tree-sitter = { workspace = true }
+streaming-iterator = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-go = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-php = { workspace = true }
+tree-sitter-c-sharp = { workspace = true }
+tree-sitter-ruby = { workspace = true }
+tree-sitter-java = { workspace = true }
+tree-sitter-elixir = { workspace = true }
+
+[lints]
+workspace = true

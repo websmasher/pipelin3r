@@ -38,6 +38,7 @@ pub struct AgentStep {
 /// Wraps an [`Executor`] and a base directory. Each step declares its
 /// inputs and outputs; the context handles transport (local path or
 /// remote bundle upload/download).
+#[derive(Debug)]
 pub struct PipelineContext {
     executor: Arc<Executor>,
     base_dir: PathBuf,

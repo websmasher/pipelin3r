@@ -24,6 +24,12 @@ pub struct TransformBuilder {
     transform_fn: Option<TransformFn>,
 }
 
+impl std::fmt::Debug for TransformBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransformBuilder").finish_non_exhaustive()
+    }
+}
+
 /// Result of a transform execution.
 #[derive(Debug, Clone)]
 pub struct TransformResult {

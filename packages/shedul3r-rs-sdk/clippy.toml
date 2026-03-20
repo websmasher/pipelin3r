@@ -1,0 +1,99 @@
+# =============================================================================
+# clippy.toml -- Guardrails for shedul3r-rs-sdk (Rust client SDK library)
+# =============================================================================
+# Published library crate. Constructs reqwest::Client internally (with #[allow]
+# where needed). All configuration arrives via function parameters.
+#
+# clippy.toml does not support inheritance -- this file is self-contained.
+
+# =============================================================================
+# THRESHOLDS (same as workspace)
+# =============================================================================
+
+too-many-lines-threshold = 75
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 7
+type-complexity-threshold = 75
+max-struct-bools = 3
+
+# =============================================================================
+# DISALLOWED METHODS
+# =============================================================================
+
+disallowed-methods = [
+    # -- Environment variable access --
+    { path = "std::env::var", reason = "SDK library receives config via parameters -- no direct env access" },
+    { path = "std::env::var_os", reason = "SDK library receives config via parameters -- no direct env access" },
+    { path = "std::env::vars", reason = "SDK library receives config via parameters -- no direct env access" },
+
+    # -- Environment variable mutation --
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded contexts -- environment mutation is not thread-safe" },
+
+    # -- Process control --
+    { path = "std::process::exit", reason = "Use proper error propagation (return Result) -- process::exit skips destructors" },
+    { path = "std::process::Command::new", reason = "Shell execution not permitted in SDK library" },
+
+    # -- Blocking sleep --
+    { path = "std::thread::sleep", reason = "Use tokio::time::sleep for async context -- std::thread::sleep blocks the tokio runtime" },
+
+    # -- Filesystem operations --
+    { path = "std::fs::read_to_string", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::read", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::read_dir", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::read_link", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::write", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::remove_file", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::remove_dir_all", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::create_dir_all", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::rename", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::copy", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::metadata", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::symlink_metadata", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::canonicalize", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::set_permissions", reason = "SDK is a pure HTTP client -- no filesystem access" },
+    { path = "std::fs::hard_link", reason = "SDK is a pure HTTP client -- no filesystem access" },
+
+    # -- HTTP client construction (use #[allow] with justification where SDK must construct) --
+    { path = "reqwest::Client::new", reason = "SDK constructs client internally -- use #[allow] with justification at construction site" },
+    { path = "reqwest::Client::builder", reason = "SDK constructs client internally -- use #[allow] with justification at construction site" },
+
+    # -- Raw serde deserialization (use Validated<T>::new() for external data) --
+    { path = "serde_json::from_str", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+    { path = "serde_json::from_slice", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+    { path = "serde_json::from_value", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+    { path = "serde_json::from_reader", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+    { path = "reqwest::Response::json", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+    { path = "toml::from_str", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+    { path = "serde_yaml::from_str", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+    { path = "serde_yaml::from_reader", reason = "BANNED: Use Validated<T>::new(value, &ctx) instead. (1) Add #[derive(garde::Validate)] to your response/data type. (2) Add garde rules to each field -- #[garde(length(chars, min = 1, max = N))] for strings, #[garde(range(min = 0))] for numbers, #[garde(dive)] for nested structs, #[garde(length(min = 1))] for non-empty vecs. (3) Deserialize into the raw type, then wrap with Validated::new()." },
+]
+
+# =============================================================================
+# DISALLOWED TYPES (workspace bans + global state bans)
+# =============================================================================
+
+disallowed-types = [
+    # -- Collections --
+    { path = "std::collections::HashMap", reason = "Use BTreeMap for deterministic iteration order" },
+    { path = "std::collections::HashSet", reason = "Use BTreeSet for deterministic iteration order" },
+
+    # -- Synchronization --
+    { path = "std::sync::Mutex", reason = "Use parking_lot::Mutex -- no poisoning, better performance" },
+    { path = "std::sync::RwLock", reason = "Use parking_lot::RwLock -- no poisoning, better performance" },
+
+    # -- Filesystem --
+    { path = "std::fs::File", reason = "SDK is a pure HTTP client -- no direct file handle construction" },
+
+    # -- Global state (library crates must be pure) --
+    { path = "std::sync::LazyLock", reason = "No global state in library code -- inject dependencies instead" },
+    { path = "std::sync::OnceLock", reason = "No global state in library code -- inject dependencies instead" },
+    { path = "once_cell::sync::OnceCell", reason = "No global state in library code -- inject dependencies instead" },
+    { path = "once_cell::sync::Lazy", reason = "No global state in library code -- inject dependencies instead" },
+
+    # -- Axum extractors (not applicable but protective) --
+    { path = "axum::extract::Json", reason = "BANNED: Use ValidatedJson<T>/ValidatedQuery<T>/ValidatedForm<T> instead. Requires #[derive(garde::Validate)] on the request type." },
+    { path = "axum::Json", reason = "BANNED: Use ValidatedJson<T>/ValidatedQuery<T>/ValidatedForm<T> instead. Requires #[derive(garde::Validate)] on the request type." },
+    { path = "axum::extract::Query", reason = "BANNED: Use ValidatedJson<T>/ValidatedQuery<T>/ValidatedForm<T> instead. Requires #[derive(garde::Validate)] on the request type." },
+    { path = "axum::extract::Form", reason = "BANNED: Use ValidatedJson<T>/ValidatedQuery<T>/ValidatedForm<T> instead. Requires #[derive(garde::Validate)] on the request type." },
+]

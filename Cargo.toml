@@ -17,6 +17,7 @@ dead_code = "deny"
 unused_results = "deny"
 unused_crate_dependencies = "deny"
 missing_docs = "deny"
+missing_debug_implementations = "warn" # TODO: set to "warn" after adding Debug derives to all public types
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

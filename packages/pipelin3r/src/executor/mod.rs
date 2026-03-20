@@ -72,6 +72,7 @@ impl RemoteCommandConfig {
 }
 
 /// Pipeline executor that manages SDK client, authentication, and dry-run mode.
+#[derive(Debug)]
 #[allow(
     clippy::disallowed_types,
     reason = "published library: avoiding parking_lot dependency to minimize dependency tree"
@@ -88,6 +89,7 @@ pub struct Executor {
 }
 
 /// Configuration for dry-run capture mode.
+#[derive(Debug)]
 pub(crate) struct DryRunConfig {
     /// Base directory for capture output.
     pub base_dir: PathBuf,

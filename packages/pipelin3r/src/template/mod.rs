@@ -18,6 +18,7 @@ type ReplacementPair = (String, String);
 /// placeholder-like strings. Both are applied in a single pass: all
 /// placeholder positions are located first, then replaced simultaneously
 /// so no replacement value can inject into another.
+#[derive(Debug)]
 pub struct TemplateFiller {
     replacements: Vec<ReplacementPair>,
     content_replacements: Vec<ReplacementPair>,
