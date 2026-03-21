@@ -10,7 +10,7 @@
 ```
 guardrail3 rs init [PATH] --profile <service|library> [--force]
 ```
-Creates `guardrail3.toml`, `local/` override directory, and release configs (service only).
+Creates `guardrail3.toml` and release configs (service only). Override files go in `.guardrail3/overrides/` (convention path, no config needed).
 
 ```
 guardrail3 rs generate [PATH]
@@ -175,17 +175,17 @@ name = "service"
 workspace_root = "."
 
 # --- Services (in apps/) ---
-[rust.crates.my-api]
+[rust.apps.my-api]
 profile = "service"
 layer = "composition-root"
 
 # --- Libraries (in packages/) ---
-[rust.crates.my-lib]
+[rust.apps.my-lib]
 profile = "library"
 layer = "pure"
 allowed_deps = ["serde", "thiserror", "chrono"]
 
-[rust.crates.my-sdk]
+[rust.apps.my-sdk]
 profile = "library"
 allowed_deps = ["serde", "serde_json", "reqwest", "tokio", "thiserror"]
 ```
@@ -198,15 +198,15 @@ allowed_deps = ["serde", "serde_json", "reqwest", "tokio", "thiserror"]
 | `layer` | `"composition-root"` or `"pure"` | `composition-root` allows `LazyLock`; `pure` bans global state |
 | `allowed_deps` | `["serde", "thiserror", ...]` | Dependency allowlist. Any `[dependencies]` entry NOT listed = R-DEPS-01 error. `[dev-dependencies]` and `[build-dependencies]` not checked. Workspace path deps not checked. |
 
-### local/ overrides (created by `rs init`)
+### .guardrail3/overrides/ (convention path, no config needed)
 
 | File | Purpose |
 |------|---------|
-| `local/clippy-methods.toml` | Extra disallowed methods |
-| `local/clippy-types.toml` | Extra disallowed types |
-| `local/deny-bans.toml` | Extra crate bans |
-| `local/deny-skip.toml` | Duplicate crate skip entries |
-| `local/deny-feature-bans.toml` | Feature bans |
+| `.guardrail3/overrides/clippy-methods.toml` | Extra disallowed methods |
+| `.guardrail3/overrides/clippy-types.toml` | Extra disallowed types |
+| `.guardrail3/overrides/deny-bans.toml` | Extra crate bans |
+| `.guardrail3/overrides/deny-skip.toml` | Duplicate crate skip entries |
+| `.guardrail3/overrides/deny-feature-bans.toml` | Feature bans |
 
 ---
 
@@ -272,7 +272,78 @@ R53 unsafe_code=forbid, R55-R57 workspace metadata, R-ARCH-01 service missing he
 
 **Release:** R-REL-*, R-PUB-*, R-BIN-* (workflow, metadata, binary release).
 **Garde:** R-GARDE-01 garde dependency (error if missing), R-GARDE-02 clippy bans, R-GARDE-05 input boundary structs (Deserialize/Parser/Args/FromRow) without Validate.
-**Tests:** R-TEST-02..09 (R-TEST-09: no inline tests in src/).
+**Tests:** R-TEST-02..09.
+
+### Test Organization (R-TEST-09)
+
+R-TEST-09 enforces that test code is in separate files, not inline in production source.
+
+**Unit tests** — use the `#[path]` pattern to keep private access:
+
+```rust
+// In src/parser.rs (production code):
+#[cfg(test)]
+#[path = "parser_tests.rs"]
+mod tests;
+
+// In src/parser_tests.rs (test code, separate file):
+use super::*;  // access to private items works
+
+#[test]
+fn test_parse() { ... }
+```
+
+This is acceptable — R-TEST-09 does NOT flag `#[cfg(test)] mod tests;` declarations
+(no body = just a pointer to a separate file).
+
+**Integration tests** — use `tests/` at crate root for public API testing:
+```
+my-crate/
+  src/
+    parser.rs
+    parser_tests.rs    ← unit tests (private access via use super::*)
+  tests/
+    integration.rs     ← integration tests (pub API only)
+```
+
+R-TEST-09 flags: files in `src/` with `#[test]` functions or `#[cfg(test)] mod tests { ... }`
+(with inline body). The fix is to extract the body to a `_tests.rs` file using `#[path]`.
+
+---
+
+## JSON Output Schema
+
+When using `--format json`, the output conforms to this schema:
+
+```json
+{
+  "project": "<path>",
+  "stacks": ["Rust", "TypeScript"],
+  "sections": [{
+    "name": "<section name>",
+    "results": [{
+      "id": "<check ID>",
+      "severity": "error|warn|info",
+      "title": "<short title>",
+      "message": "<detailed message>",
+      "file": "<absolute path or null>",
+      "line": "<line number or null>",
+      "inventory": true|false
+    }]
+  }],
+  "summary": {
+    "errors": N,
+    "warnings": N,
+    "info": N
+  }
+}
+```
+
+- `severity`: `"error"` = must fix, `"warn"` = should fix, `"info"` = informational / inventory
+- `inventory`: `true` for passing confirmation checks (hidden by default, shown with `--inventory`)
+- `file` and `line`: present when the check relates to a specific source location, `null` otherwise
+
+---
 
 ### TypeScript Checks
 

@@ -28,8 +28,12 @@ profile = "library"
 layer = "pure"
 allowed_deps = ["shedul3r-rs-sdk", "serde_json", "thiserror", "tokio", "toml", "tracing"]
 
-# --- Binary stub ---
+# --- Binary stubs ---
 [rust.apps.shedul3r-bin]
+profile = "service"
+layer = "composition-root"
+
+[rust.apps.f3tch]
 profile = "service"
 layer = "composition-root"
 

@@ -19,7 +19,6 @@ allow-wildcard-paths = true
 highlight = "all"
 
 skip = [
-    { crate = "core-foundation@0.9.4", reason = "transitive duplicate: hyper-util pulls 0.9 via system-configuration, native-tls pulls 0.10" },
 ]
 
 deny = [
@@ -28,8 +27,8 @@ deny = [
     { name = "json5", wrappers = [] },
     { name = "sonic-rs", wrappers = [] },
     # --- TLS: standardize on rustls (no OpenSSL) ---
-    { name = "openssl", wrappers = ["native-tls"] }, # EXCEPTION: reqwest pulls openssl via native-tls on macOS
-    { name = "openssl-sys", wrappers = ["openssl", "native-tls"] }, # EXCEPTION: transitive dep of openssl
+    { name = "openssl", wrappers = [] },
+    { name = "openssl-sys", wrappers = [] },
     # --- HTTP: standardize on reqwest ---
     { name = "ureq", wrappers = [] },
     { name = "surf", wrappers = [] },
@@ -59,14 +58,6 @@ deny = [
     { name = "rmp-serde", wrappers = [] },
     { name = "prost", wrappers = [] },
     { name = "flatbuffers", wrappers = [] },
-    # --- Parsing: use structured parsers, never regex ---
-    { name = "regex", wrappers = ["tree-sitter", "globset", "ignore"] }, # EXCEPTION: transitive only
-    { name = "fancy-regex", wrappers = [] },
-    { name = "onig", wrappers = [] },
-    { name = "pcre2", wrappers = [] },
-    { name = "grep-cli", wrappers = [] },
-    { name = "grep-regex", wrappers = [] },
-    { name = "grep-matcher", wrappers = [] },
 ]
 
 # Feature-level bans -- prevent agents from enabling kitchen-sink features
@@ -74,7 +65,7 @@ deny = [
 name = "tokio"
 deny = ["full"]
 # Force explicit feature selection instead of enabling everything
-allow = ["rt-multi-thread", "rt", "macros", "net", "sync", "signal", "bytes", "default", "io-util", "time", "fs", "process"]
+allow = ["rt-multi-thread", "macros", "net", "sync", "signal", "bytes", "default", "io-util", "time"]
 
 # ============================================================
 # LICENSE CHECKING

@@ -7,3 +7,4 @@
 mutants.out/
 .env.local
 .claude/worktrees/
+apps/f3tch/target/
