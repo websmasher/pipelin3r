@@ -182,8 +182,12 @@ mod tests {
         };
         let result = executor.run_agent(&config).await;
 
-        // Dry-run doesn't validate expect_outputs, so this succeeds.
-        assert!(result.is_ok(), "dry-run accepts '.' in expect_outputs");
+        assert!(result.is_err(), "dry-run must reject '.' in expect_outputs");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid") || msg.contains("current dir") || msg.contains('.'),
+            "error should mention invalid output path, got: {msg}"
+        );
     }
 
     /// Test 6: validate_path with backslash separators on Unix.

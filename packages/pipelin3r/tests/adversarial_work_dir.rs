@@ -557,8 +557,8 @@ mod tests {
 
         let executor = dry_run_executor(capture_dir);
 
-        // FINDING: expect_outputs paths are not validated for traversal.
-        // In remote mode, this could be used to download arbitrary files.
+        // Regression guard: expect_outputs paths must be validated even in
+        // dry-run mode so traversal is rejected before any transport logic.
         let config = AgentConfig {
             work_dir: Some(work),
             expect_outputs: vec![
@@ -569,11 +569,14 @@ mod tests {
         };
         let result = executor.run_agent(&config).await;
 
-        // In dry-run mode, expect_outputs are not used, so this succeeds.
-        // But in real mode, dir.join("../../../etc/passwd") would escape.
         assert!(
-            result.is_ok(),
-            "dry-run doesn't use expect_outputs, but real mode would have a path traversal"
+            result.is_err(),
+            "dry-run must reject traversal in expect_outputs before execution"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid") || msg.contains("traversal") || msg.contains(".."),
+            "error should mention invalid output path, got: {msg}"
         );
     }
 
@@ -722,10 +725,14 @@ mod tests {
         };
         let result = executor.run_agent(&config).await;
 
-        // Dry-run succeeds because expect_outputs aren't used in dry-run mode.
         assert!(
-            result.is_ok(),
-            "traversal paths in expect_outputs are silently accepted"
+            result.is_err(),
+            "traversal paths in expect_outputs must be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid") || msg.contains("traversal") || msg.contains(".."),
+            "error should mention invalid output path, got: {msg}"
         );
     }
 
@@ -747,8 +754,13 @@ mod tests {
         let result = executor.run_agent(&config).await;
 
         assert!(
-            result.is_ok(),
-            "expect_outputs accepts traversal paths without validation"
+            result.is_err(),
+            "expect_outputs must reject traversal paths during dry-run validation"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid") || msg.contains("traversal") || msg.contains(".."),
+            "error should mention invalid output path, got: {msg}"
         );
     }
 }

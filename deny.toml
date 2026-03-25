@@ -19,6 +19,8 @@ allow-wildcard-paths = true
 highlight = "all"
 
 skip = [
+    { crate = "getrandom@0.4.2", reason = "tempfile pulls the newer line while ring still depends on 0.2.x" },
+    { crate = "windows-sys@0.52.0", reason = "ring and rustls transitively pin an older windows-sys line than tokio/rustix" },
 ]
 
 deny = [
@@ -65,7 +67,7 @@ deny = [
 name = "tokio"
 deny = ["full"]
 # Force explicit feature selection instead of enabling everything
-allow = ["rt-multi-thread", "macros", "net", "sync", "signal", "bytes", "default", "io-util", "time"]
+allow = ["rt-multi-thread", "rt", "macros", "net", "sync", "signal", "bytes", "default", "io-util", "time", "fs", "process"]
 
 # ============================================================
 # LICENSE CHECKING

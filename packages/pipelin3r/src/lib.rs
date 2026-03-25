@@ -20,7 +20,7 @@ pub mod error;
 /// Pipeline executor (SDK client + auth + dry-run).
 pub mod executor;
 /// Centralized filesystem operations.
-pub(crate) mod fs;
+pub mod fs;
 /// Image generation via the OpenRouter API.
 pub mod image_gen;
 /// Typed LLM model and provider selection.
@@ -29,6 +29,8 @@ pub mod model;
 pub mod pipeline;
 /// Bounded async concurrency pool.
 pub mod pool;
+/// Reusable high-level presets built on top of pipelin3r primitives.
+pub mod presets;
 /// Two-phase template filler.
 pub mod template;
 /// Pure function transforms (stub).
@@ -56,6 +58,10 @@ pub use image_gen::{
 pub use model::{Model, ModelConfig, Provider, Tool};
 pub use pipeline::{AgentStep, PipelineContext};
 pub use pool::{run_pool, run_pool_map};
+pub use presets::{
+    DEFAULT_CRITIC_PROMPT, DEFAULT_REWRITER_PROMPT, WritingStepConfig, build_writing_step,
+    run_writing_step,
+};
 pub use template::TemplateFiller;
 pub use transform::{TransformBuilder, TransformResult};
 pub use utils::{chunk_by_size, parse_labeled_fields, strip_code_fences, strip_preamble};

@@ -187,22 +187,21 @@ async fn run_agent_dry_run_missing_output_still_succeeds() {
     let executor = Arc::new(local_executor(capture_dir));
     let ctx = PipelineContext::new(executor, base_dir.clone());
 
-    // Declare an output that won't exist (dry-run doesn't create real files).
+    // Declare an output. Dry-run now creates placeholder expected outputs.
     let step = make_step("output-check", vec![], vec!["result.txt"]);
     let result = ctx.run_agent(step).await;
 
     assert!(
         result.is_ok(),
-        "dry-run should succeed even when output is missing"
+        "dry-run should succeed and materialize placeholder outputs"
     );
     assert!(
         result.unwrap().success,
         "dry-run result should report success"
     );
-    // The output file doesn't exist — the code logs a warning but doesn't error.
     assert!(
-        !base_dir.join("result.txt").is_file(),
-        "dry-run should not produce the output file"
+        base_dir.join("result.txt").is_file(),
+        "dry-run should produce the declared placeholder output file"
     );
 }
 
@@ -362,19 +361,17 @@ async fn remote_executor_output_copy_back_limitation() {
     let executor = Arc::new(remote_executor(capture_dir));
     let ctx = PipelineContext::new(executor, base_dir.clone());
 
-    // Declare an output — in dry-run it won't actually be produced.
+    // Declare an output. Dry-run now creates placeholder expected outputs.
     let step = make_step("remote-output", vec!["in.txt"], vec!["out.txt"]);
     let result = ctx.run_agent(step).await;
 
     assert!(
         result.is_ok(),
-        "remote dry-run should succeed even without real output"
+        "remote dry-run should succeed and materialize placeholder outputs"
     );
-    // Limitation: cannot verify output copy-back without real shedul3r execution.
-    // The output file will not exist in base_dir because dry-run doesn't run the agent.
     assert!(
-        !base_dir.join("out.txt").is_file(),
-        "dry-run should not produce real output files"
+        base_dir.join("out.txt").is_file(),
+        "dry-run should produce the declared placeholder output file"
     );
 }
 

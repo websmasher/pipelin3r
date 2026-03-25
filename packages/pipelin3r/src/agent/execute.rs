@@ -70,6 +70,7 @@ pub fn execute_dry_run_capture(
     task_yaml: &str,
     prompt: &str,
     work_dir: Option<&Path>,
+    expected_outputs: &[String],
     env: Option<&EnvironmentMap>,
 ) -> Result<AgentResult, PipelineError> {
     let mut guard = dry_run_mutex
@@ -103,6 +104,7 @@ pub fn execute_dry_run_capture(
     let meta = serde_json::json!({
         "workDir": work_dir.map(|p| p.display().to_string()),
         "workDirFiles": work_dir_files,
+        "expectedOutputs": expected_outputs,
         "environment": env_keys,
     });
     crate::fs::write(
@@ -112,10 +114,23 @@ pub fn execute_dry_run_capture(
     )?;
 
     tracing::info!("[dry-run] Captured to {}", capture_dir.display());
+    let mut output_files = BTreeMap::new();
+    if let Some(dir) = work_dir {
+        for output_path in expected_outputs {
+            validate_path(output_path)?;
+            let local_path = dir.join(output_path);
+            if let Some(parent) = local_path.parent() {
+                crate::fs::create_dir_all(parent)?;
+            }
+            crate::fs::write(&local_path, "")?;
+            let _ = output_files.insert(output_path.clone(), String::new());
+        }
+    }
+
     Ok(AgentResult {
         success: true,
         output: String::from("(dry-run)"),
-        output_files: BTreeMap::new(),
+        output_files,
     })
 }
 

@@ -281,6 +281,7 @@ impl Executor {
                 &task_yaml,
                 &config.prompt,
                 config.work_dir.as_deref(),
+                &config.expect_outputs,
                 env.as_ref(),
             );
         }

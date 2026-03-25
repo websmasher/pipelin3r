@@ -143,7 +143,7 @@ async fn dry_run_with_agent_config() {
     assert!(result.success, "dry-run should succeed");
     assert!(
         result.output_files.is_empty(),
-        "dry-run should have no output files"
+        "dry-run without expected outputs should have no output files"
     );
 
     // Read the captured task YAML and verify it contains the opus model ID.
@@ -155,6 +155,37 @@ async fn dry_run_with_agent_config() {
     );
 
     let _ = std::fs::remove_dir_all("/tmp/pipelin3r-config-test");
+}
+
+#[tokio::test]
+async fn dry_run_creates_placeholder_expected_outputs() {
+    let capture_dir = PathBuf::from("/tmp/pipelin3r-dry-run-placeholders");
+    let work_dir = PathBuf::from("/tmp/pipelin3r-dry-run-workdir");
+    std::fs::create_dir_all(&work_dir).unwrap();
+
+    let executor = Executor::with_defaults()
+        .unwrap()
+        .with_dry_run(capture_dir.clone());
+
+    let config = AgentConfig {
+        work_dir: Some(work_dir.clone()),
+        expect_outputs: vec![String::from("out/result.md")],
+        ..AgentConfig::new("placeholder-test", "test prompt")
+    };
+
+    let result = executor.run_agent(&config).await.unwrap();
+    assert!(result.success, "dry-run should succeed");
+    assert!(
+        work_dir.join("out/result.md").is_file(),
+        "dry-run should create placeholder expected outputs"
+    );
+    assert!(
+        result.output_files.contains_key("out/result.md"),
+        "dry-run result should expose placeholder output files"
+    );
+
+    let _ = std::fs::remove_dir_all(capture_dir);
+    let _ = std::fs::remove_dir_all(work_dir);
 }
 
 #[tokio::test]
