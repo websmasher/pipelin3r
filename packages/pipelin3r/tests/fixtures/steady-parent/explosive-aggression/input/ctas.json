@@ -1,0 +1,15 @@
+{
+  "community": {
+    "eyebrow": "When the rage seems too big",
+    "title": "Talk to parents who wondered if this was normal too",
+    "body": "You'll know which signs prompted other parents to call a professional and which ones resolved on their own. We are there with you daily too.",
+    "buttonText": "Join the community"
+  },
+  "course": {
+    "eyebrow": "Rage out of nowhere",
+    "title": "The Beyond Hitting course will help you gauge when aggression needs outside support",
+    "body": "You'll learn what's within the normal range and what signals it's time to bring in a professional.",
+    "buttonText": "Start the course",
+    "buttonUrl": "/course/beyond-hitting/"
+  }
+}

@@ -38,6 +38,8 @@ const PROSESMASHER_REPORT_PATH: &str = "prosemasher-report.json";
 const CRITIC_REPORT_INPUT_PATH: &str = "breaker-critic/critic-report.json";
 /// Default step name used when the caller does not override it.
 const DEFAULT_STEP_NAME: &str = "writing";
+/// Shipped `prosesmasher` preset used by the writing step.
+const PROSESMASHER_PRESET: &str = "general-en";
 
 /// Configuration for the writing preset.
 #[derive(Debug, Clone)]
@@ -73,7 +75,7 @@ impl WritingStepConfig {
             writer_prompt: writer_prompt.into(),
             critic_prompt: critic_prompt.into(),
             rewriter_prompt: rewriter_prompt.into(),
-            use_prosemasher: false,
+            use_prosemasher: true,
             max_iterations: 3,
         }
     }
@@ -302,65 +304,152 @@ fn build_prosemasher_breaker() -> Breaker {
 /// Run `ProseSmasher` against the current draft in an iteration directory.
 fn run_prosemasher_breaker(iteration_dir: &Path) -> Result<(), String> {
     let draft_path = iteration_dir.join(DRAFT_PATH);
+    let report_path = iteration_dir.join(PROSESMASHER_REPORT_PATH);
     if !draft_path.is_file() {
-        return Err(format!(
+        let message = format!(
             "draft file not found for prosemasher: {}",
             draft_path.display()
-        ));
+        );
+        write_prosesmasher_diagnostic_report(&report_path, None, "", &message)
+            .map_err(|e| format!("failed to write {}: {e}", report_path.display()))?;
+        return Err(message);
     }
+
+    let output = run_prosesmasher_command(&draft_path)
+        .map_err(|e| format!("failed to start prosesmasher: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
 
     #[allow(
         clippy::disallowed_methods,
-        reason = "script breakers are synchronous today; this CLI integration needs a direct subprocess call"
+        reason = "prosesmasher emits dynamic JSON; this breaker stores and forwards the raw report instead of validating into a fixed schema"
     )]
-    let output = Command::new("prosemasher")
-        .arg(&draft_path)
-        .output()
-        .map_err(|e| format!("failed to start prosemasher: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let Ok(report) = serde_json::from_slice::<serde_json::Value>(output.stdout.as_slice()) else {
+        write_prosesmasher_diagnostic_report(&report_path, output.status.code(), &stdout, &stderr)
+            .map_err(|e| format!("failed to write {}: {e}", report_path.display()))?;
         let detail = if !stderr.is_empty() {
             stderr
         } else if !stdout.is_empty() {
             stdout
         } else {
-            String::from("prosemasher exited non-zero with no output")
+            String::from("prosesmasher produced no parseable JSON output")
         };
         return Err(detail);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if stdout.is_empty() {
-        return Ok(());
-    }
-
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "ProseSmasher emits dynamic JSON; this breaker stores and forwards the raw report instead of validating into a fixed schema"
-    )]
-    let parsed: serde_json::Value = match serde_json::from_slice(output.stdout.as_slice()) {
-        Ok(value) => value,
-        Err(_) => return Err(stdout),
     };
-    let pretty = serde_json::to_string_pretty(&parsed)
-        .map_err(|e| format!("failed to format prosemasher JSON: {e}"))?;
-    let report_path = iteration_dir.join(PROSESMASHER_REPORT_PATH);
+
+    let pretty = serde_json::to_string_pretty(&report)
+        .map_err(|e| format!("failed to format prosesmasher JSON: {e}"))?;
     crate::fs::write(&report_path, &pretty)
         .map_err(|e| format!("failed to write {}: {e}", report_path.display()))?;
 
-    if prosemasher_report_is_clean(&parsed) {
-        Ok(())
-    } else {
-        Err(format!(
-            "ProseSmasher reported issues:\n```json\n{pretty}\n```"
-        ))
+    if output.status.success() && prosemasher_report_is_clean(&report) {
+        return Ok(());
     }
+
+    if !output.status.success() && prosemasher_report_is_clean(&report) {
+        return Err(format!(
+            "prosesmasher exited {:?} despite a clean report:\n```json\n{pretty}\n```",
+            output.status.code()
+        ));
+    }
+
+    Err(format!(
+        "ProseSmasher reported issues:\n```json\n{pretty}\n```"
+    ))
+}
+
+/// Run the local `prosesmasher` CLI, falling back to the sibling workspace.
+fn run_prosesmasher_command(draft_path: &Path) -> Result<std::process::Output, std::io::Error> {
+    let draft_path_arg = draft_path.display().to_string();
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "script breakers are synchronous today; this CLI integration needs a direct subprocess call"
+    )]
+    match Command::new("prosesmasher")
+        .args([
+            "check",
+            draft_path_arg.as_str(),
+            "--preset",
+            PROSESMASHER_PRESET,
+            "--format",
+            "json",
+        ])
+        .output()
+    {
+        Ok(output) => Ok(output),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let workspace = sibling_prosesmasher_workspace();
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "fallback to sibling workspace keeps local deterministic checks runnable without a prior install"
+            )]
+            Command::new("cargo")
+                .current_dir(workspace)
+                .args([
+                    "run",
+                    "-q",
+                    "-p",
+                    "prosesmasher",
+                    "--",
+                    "check",
+                    draft_path_arg.as_str(),
+                    "--preset",
+                    PROSESMASHER_PRESET,
+                    "--format",
+                    "json",
+                ])
+                .output()
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Locate the sibling `prosesmasher` workspace checkout.
+fn sibling_prosesmasher_workspace() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("prosesmasher")
+        .join("apps")
+        .join("prosesmasher")
+}
+
+/// Persist a machine-readable diagnostic report when the CLI does not return JSON.
+fn write_prosesmasher_diagnostic_report(
+    report_path: &Path,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> Result<(), PipelineError> {
+    let report = serde_json::json!({
+        "success": false,
+        "exit_reason": "process-error",
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+    });
+    let pretty = serde_json::to_string_pretty(&report).map_err(|e| {
+        PipelineError::Other(format!(
+            "failed to serialize prosesmasher diagnostic report: {e}"
+        ))
+    })?;
+    crate::fs::write(report_path, pretty)?;
+    Ok(())
 }
 
 /// Heuristic pass/fail check for `ProseSmasher` JSON output.
 fn prosemasher_report_is_clean(report: &serde_json::Value) -> bool {
+    if let Some(failures) = report.get("failures").and_then(serde_json::Value::as_array) {
+        return failures.is_empty();
+    }
+
+    if let Some(failed) = report.get("failed").and_then(serde_json::Value::as_u64) {
+        return failed == 0;
+    }
+
     let has_non_empty_array = |key: &str| {
         report
             .get(key)
@@ -379,11 +468,11 @@ fn prosemasher_report_is_clean(report: &serde_json::Value) -> bool {
         .and_then(serde_json::Value::as_bool)
         .is_some_and(|value| value)
         || report
-            .get("ok")
+            .get("success")
             .and_then(serde_json::Value::as_bool)
             .is_some_and(|value| value)
         || report
-            .get("success")
+            .get("ok")
             .and_then(serde_json::Value::as_bool)
             .is_some_and(|value| value)
     {

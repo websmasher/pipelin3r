@@ -65,6 +65,9 @@ pub async fn run_verified_step(
     step: VerifiedStep,
 ) -> Result<VerifiedStepResult, PipelineError> {
     let step_dir = work_dir.join(&step.name);
+    if step_dir.exists() {
+        crate::fs::remove_dir_all(&step_dir)?;
+    }
     crate::fs::create_dir_all(&step_dir)?;
 
     // ── Iteration 0: Doer ───────────────────────────────────────────
@@ -75,6 +78,7 @@ pub async fn run_verified_step(
 
     // Copy doer inputs into iter-0 from work_dir.
     copy_inputs_required(work_dir, &iter_0, &step.doer.inputs, "doer")?;
+    prepare_output_placeholders(&iter_0, &step.doer.outputs)?;
 
     // Resolve and run doer.
     let doer_agent_step = step.doer.resolve(&iter_0)?;
@@ -176,6 +180,7 @@ pub async fn run_verified_step(
             &step.fixer.inputs,
             "fixer",
         )?;
+        prepare_output_placeholders(&iter_dir, &step.fixer.outputs)?;
 
         // Resolve and run fixer.
         let fixer_agent_step = step.fixer.resolve(&iter_dir)?;
@@ -370,6 +375,7 @@ async fn run_breakers(
 
                 // Copy breaker inputs from output_dir.
                 copy_inputs_required(output_dir, &breaker_dir, &step.inputs, "breaker")?;
+                prepare_output_placeholders(&breaker_dir, &step.outputs)?;
 
                 // Resolve and run.
                 let agent_step = step.resolve(&breaker_dir)?;
@@ -469,6 +475,25 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), PipelineError> {
             let _ = crate::fs::copy(&entry_path, &dst_path)?;
         }
         // Skip symlinks and other special file types.
+    }
+    Ok(())
+}
+
+/// Pre-create declared output files so Claude can read them before writing.
+///
+/// Recent remote Claude Code builds enforce a "read before write" rule for the
+/// Write tool. Creating empty placeholders ahead of time gives prompts a stable
+/// target file to inspect and then replace.
+fn prepare_output_placeholders(dir: &Path, outputs: &[String]) -> Result<(), PipelineError> {
+    for output in outputs {
+        let path = dir.join(output);
+        if path.is_file() {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            crate::fs::create_dir_all(parent)?;
+        }
+        crate::fs::write(&path, "")?;
     }
     Ok(())
 }

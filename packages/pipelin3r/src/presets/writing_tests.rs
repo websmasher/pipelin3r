@@ -55,9 +55,18 @@ fn build_writing_step_uses_workspace_entries() {
 }
 
 #[test]
+fn writing_config_enables_prosemasher_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = WritingStepConfig::new(dir.path().to_path_buf(), "write", "critic", "rewrite");
+    assert!(config.use_prosemasher);
+}
+
+#[test]
 fn prosemasher_clean_report_passes() {
     let report = serde_json::json!({
-        "issues": [],
+        "success": true,
+        "failed": 0,
+        "failures": [],
     });
     assert!(prosemasher_report_is_clean(&report));
 }
@@ -65,9 +74,9 @@ fn prosemasher_clean_report_passes() {
 #[test]
 fn prosemasher_non_empty_issues_fails() {
     let report = serde_json::json!({
-        "issues": [
-            { "message": "too much passive voice" }
-        ],
+        "success": false,
+        "failed": 1,
+        "failures": [{ "message": "too much passive voice" }],
     });
     assert!(!prosemasher_report_is_clean(&report));
 }

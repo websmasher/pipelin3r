@@ -138,6 +138,18 @@ The `CLAUDE_CODE_OAUTH_TOKEN` is required for `claude -p` to authenticate with A
 
 The token is stored in macOS keychain under `Claude Code-credentials-*`. It expires and refreshes automatically when Claude Code runs locally. For remote execution, you need to extract and pass it.
 
+### Authentication gotchas
+
+- If a remote task fails with a bare `Exit 1:` and no useful stderr, do not assume the worker is broken. An expired Claude OAuth token often only shows up in Claude's stdout, not stderr.
+- Refresh the token locally first by running a real `claude -p` command on your machine, then re-extract `claudeAiOauth.accessToken` from the keychain item. Pulling a stale token from keychain and forwarding it to the worker will poison every remote Claude task.
+- The useful keychain value is the nested `claudeAiOauth.accessToken`, not the whole JSON blob.
+
+### File-writing task gotchas
+
+- For file-writing Claude tasks, process exit is not a reliable success signal. Claude can write the expected file and then keep the session open instead of exiting promptly.
+- The robust success condition is: declared output files exist, are non-empty, and stop changing. If you only trust Claude's exit code, file-writing steps can look like retries/timeouts even when the output is already on disk.
+- Rerunning into the same work directory without clearing the step subtree contaminates later attempts with stale `iter-*` artifacts. Reset the step directory before each verified-step run.
+
 ### Permission mode
 
 On the remote server, shedul3r runs as a non-root `worker` user, so `--permission-mode bypassPermissions` works (it's blocked for root). This lets claude edit files without interactive permission prompts.

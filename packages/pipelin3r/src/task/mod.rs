@@ -32,6 +32,11 @@ pub struct TaskConfig {
     /// Code invocation. This allows running arbitrary shell commands
     /// through shedul3r without an LLM.
     pub command_override: Option<String>,
+    /// Declared output files that determine success for file-writing agent
+    /// tasks. When present, the generated Claude command exits successfully
+    /// once these outputs become non-empty and stable, even if Claude itself
+    /// keeps the session open.
+    pub success_on_outputs: Option<Vec<String>>,
 }
 
 /// Build a task YAML string from the given configuration, applying defaults.
@@ -52,14 +57,18 @@ pub fn build_task_yaml(config: &TaskConfig) -> Result<String, PipelineError> {
     let command = if let Some(ref cmd) = config.command_override {
         cmd.clone()
     } else {
-        let mut cmd = format!(
+        let mut claude_cmd = format!(
             "claude -p --model {model} --setting-sources \"\" --permission-mode bypassPermissions"
         );
         if let Some(tools) = &config.allowed_tools {
-            write!(&mut cmd, " --allowedTools {tools}")
+            write!(&mut claude_cmd, " --allowedTools {tools}")
                 .map_err(|e| PipelineError::Config(format!("failed to format command: {e}")))?;
         }
-        cmd
+        if let Some(outputs) = config.success_on_outputs.as_ref().filter(|v| !v.is_empty()) {
+            build_file_watcher_command(&claude_cmd, outputs)
+        } else {
+            claude_cmd
+        }
     };
 
     let mut out = String::new();
@@ -97,6 +106,78 @@ pub fn build_task_yaml(config: &TaskConfig) -> Result<String, PipelineError> {
         .map_err(|e| PipelineError::Config(format!("failed to format task YAML: {e}")))?;
 
     Ok(out)
+}
+
+/// Build a shell wrapper that treats non-empty stable output files as success.
+fn build_file_watcher_command(claude_cmd: &str, outputs: &[String]) -> String {
+    let outputs_array = outputs
+        .iter()
+        .map(|path| format!("'{}'", shell_single_quote(path)))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!(
+        "set +e\n\
+         prompt_file=$(mktemp)\n\
+         cat > \"$prompt_file\"\n\
+         {claude_cmd} < \"$prompt_file\" &\n\
+         claude_pid=$!\n\
+         last_sig=''\n\
+         stable_hits=0\n\
+         while kill -0 \"$claude_pid\" 2>/dev/null; do\n\
+           ready=1\n\
+           sig=''\n\
+           for path in {outputs_array}; do\n\
+             if [ ! -f \"$path\" ]; then\n\
+               ready=0\n\
+               break\n\
+             fi\n\
+             size=$(wc -c < \"$path\" 2>/dev/null || echo 0)\n\
+             sig=\"$sig|$path:$size\"\n\
+             if [ \"$size\" -le 0 ]; then\n\
+               ready=0\n\
+             fi\n\
+           done\n\
+           if [ \"$ready\" -eq 1 ]; then\n\
+             if [ \"$sig\" = \"$last_sig\" ]; then\n\
+               stable_hits=$((stable_hits + 1))\n\
+             else\n\
+               stable_hits=0\n\
+               last_sig=\"$sig\"\n\
+             fi\n\
+             if [ \"$stable_hits\" -ge 2 ]; then\n\
+               kill \"$claude_pid\" 2>/dev/null || true\n\
+               wait \"$claude_pid\" 2>/dev/null || true\n\
+               exit 0\n\
+             fi\n\
+           fi\n\
+           sleep 2\n\
+         done\n\
+         wait \"$claude_pid\"\n\
+         exit_code=$?\n\
+         rm -f \"$prompt_file\"\n\
+         ready=1\n\
+         for path in {outputs_array}; do\n\
+           if [ ! -f \"$path\" ]; then\n\
+             ready=0\n\
+             break\n\
+           fi\n\
+           size=$(wc -c < \"$path\" 2>/dev/null || echo 0)\n\
+           if [ \"$size\" -le 0 ]; then\n\
+             ready=0\n\
+             break\n\
+           fi\n\
+         done\n\
+         if [ \"$ready\" -eq 1 ]; then\n\
+           exit 0\n\
+         fi\n\
+         exit \"$exit_code\""
+    )
+}
+
+/// Escape a string for safe inclusion inside single-quoted shell literals.
+fn shell_single_quote(input: &str) -> String {
+    input.replace('\'', "'\"'\"'")
 }
 
 #[cfg(test)]

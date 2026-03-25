@@ -121,7 +121,7 @@ fn parse_write_options(args: &[String]) -> Result<WriteOptions, String> {
     let mut critic_prompt_file: Option<PathBuf> = None;
     let mut rewriter_prompt_inline: Option<String> = None;
     let mut rewriter_prompt_file: Option<PathBuf> = None;
-    let mut use_prosemasher = false;
+    let mut use_prosemasher = true;
     let mut name = String::from("writing");
     let mut max_iterations: usize = 3;
     let mut shedul3r_url = String::from("http://localhost:7943");
@@ -186,6 +186,10 @@ fn parse_write_options(args: &[String]) -> Result<WriteOptions, String> {
             }
             "--use-prosemasher" => {
                 use_prosemasher = true;
+                index = index.saturating_add(1);
+            }
+            "--no-prosemasher" => {
+                use_prosemasher = false;
                 index = index.saturating_add(1);
             }
             "--name" => {
@@ -327,7 +331,7 @@ fn usage() -> String {
          pipeliner write --workdir <dir> [--writer-prompt <text> | --writer-prompt-file <file> | stdin]\n  \
          [--critic-prompt <text> | --critic-prompt-file <file>]\n  \
          [--rewriter-prompt <text> | --rewriter-prompt-file <file>]\n  \
-         [--use-prosemasher] [--name <step-name>] [--max-iterations <n>]\n  \
+         [--no-prosemasher] [--name <step-name>] [--max-iterations <n>]\n  \
          [--shedul3r-url <url>] [--oauth-token <token>] [--dry-run <capture-dir>]",
     )
 }

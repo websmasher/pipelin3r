@@ -10,8 +10,10 @@ Rules:
 
 - Treat the current working directory as the full source bundle.
 - Inspect any files and directories present if they help evaluate the draft.
-- If there are no material issues, write exactly `No issues found` to `{{OUTPUT_PATH}}`.
-- Otherwise write valid JSON to `{{OUTPUT_PATH}}` with this exact shape:
+- Review the current contents of `{{DRAFT_PATH}}`, not a prior iteration.
+- Read `{{OUTPUT_PATH}}` first, even if it is empty.
+- If there are no material issues, replace its contents with exactly `No issues found`.
+- Otherwise replace its contents with valid JSON using this exact shape:
 
 ```json
 {
@@ -33,6 +35,8 @@ Rules:
 Constraints:
 
 - Be specific and actionable.
+- Every issue must cite exact text from the current draft, either in `message` or `suggested_fix`.
+- Before you write the JSON, re-check that each cited phrase still appears in the current draft. If it no longer appears, drop that issue.
 - Focus on substantive writing problems: clarity, structure, unsupported claims, redundancy, factual drift, and failure to satisfy the user's instruction.
 - Do not rewrite the draft.
 - `passed` must be `false` when you output JSON for issues.

@@ -1,0 +1,34 @@
+{
+  "title": "When aggression feels explosive and out of proportion: When to seek help",
+  "slug": "explosive-aggression",
+  "url": "/blog/aggression/explosive-aggression/",
+  "category": "aggression",
+  "categoryDisplay": "Aggression",
+  "pageType": "series",
+  "constraints": {
+    "wordCount": {
+      "min": 1600,
+      "max": 2400
+    },
+    "h2Count": {
+      "min": 3,
+      "max": 10
+    },
+    "ctaCount": {
+      "min": 3,
+      "max": 3
+    },
+    "imageCount": {
+      "min": 3,
+      "max": 3
+    },
+    "faqQuestionCount": {
+      "min": 3,
+      "max": 7
+    },
+    "requiresTldr": true,
+    "requiresFaq": true,
+    "minInternalLinks": 5
+  },
+  "seriesPosition": 13
+}

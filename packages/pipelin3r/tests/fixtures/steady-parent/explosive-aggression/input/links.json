@@ -1,0 +1,36 @@
+{
+  "bodyLinks": [
+    {
+      "url": "/blog/spirited-kids/adhd-sensory-asd-signs/",
+      "intent": "when discussing whether explosive aggression might signal ADHD, sensory processing issues, or ASD"
+    },
+    {
+      "url": "/blog/spirited-kids/odd-diagnosis/",
+      "intent": "when discussing whether oppositional defiant disorder is a useful framework or a relationship problem"
+    },
+    {
+      "url": "/blog/spirited-kids/finding-specialist/",
+      "intent": "when discussing how to find the right professional for evaluation and support"
+    },
+    {
+      "url": "/blog/tantrums/when-to-worry/",
+      "intent": "when discussing the overlap between concerning tantrums and explosive aggression"
+    },
+    {
+      "url": "/blog/aggression/sensory-vs-frustration/",
+      "intent": "when revisiting whether the explosiveness is sensory-driven or frustration-driven as a diagnostic clue"
+    }
+  ],
+  "navLinks": [
+    {
+      "url": "/blog/aggression/guide/",
+      "intent": "link to the pillar article for this series",
+      "navType": "pillar"
+    },
+    {
+      "url": "/blog/aggression/verbal-aggression/",
+      "intent": "link to the previous article in the series",
+      "navType": "prev"
+    }
+  ]
+}

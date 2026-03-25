@@ -256,6 +256,7 @@ impl Executor {
             retry_backoff_multiplier: retry_backoff,
             retry_max_delay,
             command_override: None,
+            success_on_outputs: Some(config.expect_outputs.clone()),
         })?;
 
         // Resolve auth: config override > executor default > empty.
@@ -367,6 +368,7 @@ impl Executor {
             retry_backoff_multiplier: config.retry_backoff_multiplier,
             retry_max_delay: config.retry_max_delay.map(format_duration),
             command_override: Some(config.command.clone()),
+            success_on_outputs: None,
         })?;
 
         let env = config.env.clone();

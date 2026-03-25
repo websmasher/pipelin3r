@@ -1,0 +1,15 @@
+{
+  "eyebrow": "The aggression feels completely out of control",
+  "title": "When Your Child Hits Response Flowchart for intense episodes",
+  "body": "When aggression is explosive and disproportionate, you need a safe, consistent response for each incident while you pursue a longer-term evaluation. The flowchart covers your immediate options.",
+  "inputPlaceholder": "Email address",
+  "buttonText": "Send me the flowchart",
+  "endpoint": "/api/freebie-subscribe",
+  "tags": [
+    "lead",
+    "freebie-aggression"
+  ],
+  "params": {
+    "category": "aggression"
+  }
+}

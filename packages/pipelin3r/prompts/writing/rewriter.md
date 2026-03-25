@@ -21,5 +21,6 @@ Rules:
 - Use the available workspace files when needed to preserve accuracy.
 - Address all substantive issues from `{{ISSUES_PATH}}`.
 - Keep what is already working; do not rewrite gratuitously.
-- Write the revised draft to `{{OUTPUT_PATH}}`.
+- Read `{{OUTPUT_PATH}}` first.
+- Then replace the contents of `{{OUTPUT_PATH}}` with the revised draft.
 - Output nothing else.

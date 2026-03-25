@@ -17,6 +17,7 @@ fn golden_fixture_matches() {
         retry_backoff_multiplier: None,
         retry_max_delay: None,
         command_override: None,
+        success_on_outputs: None,
     };
 
     let expected = "\
@@ -52,6 +53,7 @@ fn custom_values_override_defaults() {
         retry_backoff_multiplier: Some(3.0),
         retry_max_delay: Some(String::from("1m")),
         command_override: None,
+        success_on_outputs: None,
     };
 
     let result = build_task_yaml(&config).unwrap();
@@ -81,4 +83,30 @@ fn custom_values_override_defaults() {
         result.contains("max-delay: 1m"),
         "should use custom max delay"
     );
+}
+
+#[test]
+fn expected_outputs_wrap_claude_command_with_file_watcher() {
+    let config = TaskConfig {
+        name: String::from("writer"),
+        model: None,
+        timeout: None,
+        provider_id: None,
+        max_concurrent: None,
+        max_wait: None,
+        max_retries: None,
+        allowed_tools: None,
+        retry_initial_delay: None,
+        retry_backoff_multiplier: None,
+        retry_max_delay: None,
+        command_override: None,
+        success_on_outputs: Some(vec![String::from("draft.md")]),
+    };
+
+    let result = build_task_yaml(&config).unwrap();
+
+    assert!(result.contains("claude -p --model opus"));
+    assert!(result.contains("while kill -0 \"$claude_pid\""));
+    assert!(result.contains("for path in 'draft.md'; do"));
+    assert!(result.contains("stable_hits=$((stable_hits + 1))"));
 }
