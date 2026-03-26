@@ -2,128 +2,111 @@
 
 ## Philosophy
 
-Build the parser first, test it against real-world files, fix it iteratively. Use existing library analysis as a test suite at the end, not a design input at the beginning. Lossless parsing means nothing is rejected — every byte goes somewhere.
+Lossless parsing: every byte goes somewhere — recognized fields, non-standard fields, unknown lines, comments, formatting. Nothing is rejected, nothing is lost. Reconstruction from parsed struct = original bytes.
+
+The parser needs three knowledge sources: the spec (ideal grammar), the best existing library (real grammar), and real-world files (validation). All three feed into parser writing.
 
 ## Steps
 
 ### Step 1: Acquire real-world files
 
-**Input:** URL path template + domain list
-**Output:** `raw-files/0001.txt ... NNNN.txt` + `raw-files/manifest.json`
+**Tool:** `f3tch` (built, tested, committed)
+**Input:** Tranco top-1M domain list + URL path template
+**Output:** `raw-files/000001.txt ... NNNNNN.txt` + `manifest.json` + `index.json`
 
-Fetch the target file from the top 100K domains. No rate limiting needed — one request per domain, 10K concurrent, fire and forget. ~2 min wall time for 100K domains.
+Fetches the target file from top 100K domains. Filters binary (infer crate), HTML/JSON/XML, and soft-404s (probes random path). 100K domains in ~3 min.
 
-```
-fetch(
-  domains: Tranco top 100K,
-  path: "/.well-known/security.txt",
-  concurrency: 10_000,
-  timeout_per_request: 5s,
-)
-```
-
-Save every 200 response as a numbered file. Manifest records domain, HTTP status, content-type, file size, response time.
-
-**Tool:** standalone binary in pipelin3r monorepo. Generic — works for any file type (security.txt, robots.txt, ads.txt, humans.txt).
+**Status:** Done. 190 security.txt files from top 100K.
 
 ### Step 2: Research the spec
 
-**Input:** format name (e.g., "security.txt RFC 9116")
-**Output:** `spec/field-list.json` + `spec/spec-reference.md`
+**Input:** format name + RFC/spec URL
+**Output:** `spec/field-list.json` + `spec/grammar.md` + `spec/spec-reference.md`
 
-LLM agent reads the RFC/spec, produces:
-- `field-list.json`: array of `{name, required, syntax, description}` for every spec-defined field
-- `spec-reference.md`: full spec analysis (what we have from step 8 of v3)
+LLM agent reads the RFC, produces:
+- `field-list.json`: `{name, required, repeatable, syntax, description}` per field
+- `grammar.md`: ABNF or grammar rules, line structure, special syntax (PGP blocks, comments, etc.)
+- `spec-reference.md`: full analysis (reuse v3 step 8)
 
-The field list is the lookup table: if a field name is in this list, it's first-class. Everything else is non-standard.
+### Step 3: Find and rank existing libraries
 
-### Step 3: Design parser types
+**Input:** format name + language list
+**Output:** `libraries/{lang}/libraries.json` + ranking of best implementation
 
-**Input:** `spec/field-list.json` + robots.txt parser types (template)
-**Output:** Rust type definitions (`types.rs`)
+Reuses v3 steps 2-3. Discovers libraries across all languages, extracts metadata. NEW: ranks libraries by quality signals:
+- Test count (from t3str extract)
+- RFC compliance mentions in source
+- Star count / maintenance activity
+- Parser completeness (handles PGP, comments, extensions)
 
-LLM agent reads the field list and the robots.txt parser `types.rs` as a structural template. Produces the equivalent types for the new format:
-- One struct per spec-defined field (with value, line number, formatting)
-- `NonStandardField` for unrecognized but parseable fields
+Identifies the **best reference implementation** — the one to learn the real grammar from.
+
+### Step 4: Analyze the reference parser
+
+**Input:** best library's source code
+**Output:** `reference/grammar-analysis.md` + `reference/edge-cases.md`
+
+LLM agent reads the best library's parser source code. Extracts:
+- What grammar it actually implements (vs the spec)
+- Edge cases it handles that the spec doesn't cover
+- Non-standard fields it recognizes
+- How it handles malformed input
+
+This is where the NOM grammar or equivalent parsing logic gets understood.
+
+### Step 5: Design parser types
+
+**Input:** `spec/field-list.json` + `reference/grammar-analysis.md` + robots.txt parser types (template)
+**Output:** `src/types.rs`
+
+LLM agent produces Rust type definitions following the robots.txt parser pattern:
+- Typed structs for spec-defined fields (with line number, formatting)
+- `NonStandardField` for recognized-but-not-spec fields
 - `UnknownLine` for unparseable lines
 - `Comment` for comment lines
 - `LineFormatting`, `LineEnding`, `EmptyLine` for lossless reconstruction
-- Top-level `ParsedSecurityTxt` (or whatever format)
 
-Verified with script breaker: all spec fields have a corresponding type, the struct has `reconstruct()` support fields.
+Verified with script breaker: all spec fields have types, reconstruct support fields present.
 
-### Step 4: Write the parser
+### Step 6: Write the parser
 
-**Input:** `types.rs` + `spec/field-list.json` + `spec/spec-reference.md`
-**Output:** `parser.rs` + `reconstruct.rs`
+**Input:** `src/types.rs` + spec grammar + reference grammar analysis + real-world files (sample)
+**Output:** `src/parser.rs` + `src/reconstruct.rs`
 
-LLM agent writes:
-- `parser.rs`: line-by-line parser that populates the types. Handles field extraction, comment detection, separator capture, line ending tracking.
-- `reconstruct.rs`: rebuilds the original bytes from the parsed struct.
+LLM agent writes the parser, informed by both the spec and the reference implementation's grammar decisions. Doer→breaker→fixer loop.
 
-Verified with script breaker: `cargo test` passes, basic smoke tests work.
-
-### Step 5: Lossless iteration against real-world files
+### Step 7: Lossless iteration
 
 **Input:** `raw-files/*.txt` + parser binary
-**Output:** lossless reconstruction report
+**Output:** reconstruction report
 
-Script (no LLM):
-```
-for each file in raw-files/:
-  parsed = parse(file)
-  reconstructed = reconstruct(parsed)
-  assert reconstructed == original bytes
-```
+Script (no LLM): parse every real-world file, reconstruct, compare bytes. Collect failures. LLM fixer reads failures and fixes the parser. Iterate until 100% pass rate.
 
-Failures get collected. LLM fixer reads the failures and fixes the parser. Iterate until 100% pass rate on all real-world files.
+### Step 8: Analyze non-standard fields
 
-This is where the parser gets battle-tested against real formatting variations: mixed line endings, BOM, trailing whitespace, inline comments, no trailing newline, etc.
-
-### Step 6: Analyze non-standard fields
-
-**Input:** parse results from step 5
+**Input:** parse results from step 7
 **Output:** `non-standard-fields.json`
 
-Script (no LLM):
-```
-for each parsed file:
-  collect all NonStandardField entries
-aggregate by field name
-sort by frequency
-```
+Script: aggregate `NonStandardField` entries by name, count frequency, list example values. Update the parser's recognized non-standard field list.
 
-Output: `{name, count, example_values}` for every non-standard field that appeared. Human (or LLM) reviews and decides which to add to the recognized non-standard list (like robots.txt's crawl-delay, host, noindex).
+### Step 9: Library fixture quality gate
 
-### Step 7: Run existing library test fixtures
+**Input:** existing library test fixtures (from v3 pipeline) + parser binary
+**Output:** comparison report
 
-**Input:** fixtures from v3 pipeline (399 files) + parser binary
-**Output:** fixture comparison report
+Clone libraries, run t3str extract to get test fixtures, parse with new parser, compare against library behavior. Find disagreements, investigate each.
 
-Parse each fixture with the new parser. Compare against the wrapper outputs from the 23 existing libraries (already collected in ground-truth/). Find cases where the new parser disagrees with the majority. Investigate each disagreement — is the new parser wrong, or are the libraries wrong?
+### Step 10: Package and publish
 
-This is the quality gate. The existing library analysis becomes a test suite, not a design input.
+Cargo metadata, README, docs, `cargo publish --dry-run`, release.
 
-### Step 8: Package and publish
+## Tool inventory
 
-Cargo metadata, README, `cargo publish --dry-run`, release.
-
-## What's reusable from v3
-
-| v3 step | v4 usage |
-|---------|----------|
-| Steps 2-3 (find libraries, extract source) | Not needed for parser dev. Useful for wrapper generation. |
-| Step 4 (clone, install, extract tests) | Step 7 test input |
-| Step 5 (generate wrappers) | Step 7 comparison data |
-| Step 6 (run test suites) | Step 7 comparison data |
-| Step 6b (run fixtures) | Step 7 comparison data |
-| Step 7 (classify) | Step 7 classification |
-| Step 8 (research spec) | Step 2 input |
-
-## New tools needed
-
-1. **File fetcher binary** (step 1) — generic concurrent HTTP fetcher. Input: domain list + path. Output: directory of files.
-2. **Lossless verifier** (step 5) — parse + reconstruct + compare for a directory of files.
-3. **Field analyzer** (step 6) — aggregate non-standard fields from parse results.
-
-All three are scripts/binaries, no LLM needed.
+| Tool | Step | Status |
+|------|------|--------|
+| f3tch | 1 | Built |
+| v3 pipeline steps 2-3 | 3 | Built |
+| t3str | 3, 9 | Built |
+| LLM agents via shedul3r | 2, 4, 5, 6 | Built |
+| Lossless verifier | 7 | Needs building |
+| Field analyzer | 8 | Needs building |

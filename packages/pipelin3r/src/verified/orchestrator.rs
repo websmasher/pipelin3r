@@ -94,6 +94,7 @@ pub async fn run_verified_step(
 
     // Verify doer outputs exist.
     verify_outputs_exist(&iter_0, &step.doer.outputs, "doer")?;
+    mirror_outputs_into_input_dir(&iter_0, &step.doer.outputs)?;
 
     // ── Breaker-fixer loop ──────────────────────────────────────────
     // Track: which dir has the current output, and which output names to use.
@@ -168,6 +169,11 @@ pub async fn run_verified_step(
         // Write combined issues file.
         let issues_content = format_issues(&issues);
         crate::fs::write(&iter_dir.join("issues.md"), &issues_content)?;
+        let issues_input_path = iter_dir.join("input").join("issues.md");
+        if let Some(parent) = issues_input_path.parent() {
+            crate::fs::create_dir_all(parent)?;
+        }
+        crate::fs::write(&issues_input_path, &issues_content)?;
 
         // Copy fixer inputs with fallback chain:
         // 1. iter_dir itself (for issues.md already written above)
@@ -196,6 +202,7 @@ pub async fn run_verified_step(
 
         // Verify fixer outputs exist.
         verify_outputs_exist(&iter_dir, &step.fixer.outputs, "fixer")?;
+        mirror_outputs_into_input_dir(&iter_dir, &step.fixer.outputs)?;
 
         current_output_dir = iter_dir;
         current_output_names = step.fixer.outputs.clone();
@@ -312,6 +319,18 @@ fn verify_outputs_exist(dir: &Path, outputs: &[String], role: &str) -> Result<()
         if !path.is_file() {
             return Err(PipelineError::Config(format!(
                 "{role}: expected output not found: {output} (in {})",
+                dir.display()
+            )));
+        }
+        let metadata = crate::fs::metadata(&path).map_err(|e| {
+            PipelineError::Transport(format!(
+                "{role}: failed to stat output {output} (in {}): {e}",
+                dir.display()
+            ))
+        })?;
+        if metadata.len() == 0 {
+            return Err(PipelineError::Config(format!(
+                "{role}: expected output is empty: {output} (in {})",
                 dir.display()
             )));
         }
@@ -520,7 +539,7 @@ fn copy_final_outputs(
         if let (Some(src_name), Some(dst_name)) = (source_names.get(idx), final_names.get(idx)) {
             let src = source_dir.join(src_name);
             if src.is_file() {
-                let dst = final_dir.join(dst_name);
+                let dst = final_dir.join(strip_output_prefix(dst_name));
                 if let Some(parent) = dst.parent() {
                     crate::fs::create_dir_all(parent)?;
                 }
@@ -530,6 +549,39 @@ fn copy_final_outputs(
     }
 
     Ok(final_dir)
+}
+
+/// Mirror declared outputs into `input/` so the next iteration can consume
+/// stable, collision-free input paths like `input/foo.md`.
+fn mirror_outputs_into_input_dir(dir: &Path, outputs: &[String]) -> Result<(), PipelineError> {
+    for output in outputs {
+        let src = dir.join(output);
+        if !src.is_file() {
+            continue;
+        }
+        let dst = dir.join(output_to_input_path(output));
+        if let Some(parent) = dst.parent() {
+            crate::fs::create_dir_all(parent)?;
+        }
+        let _ = crate::fs::copy(&src, &dst)?;
+    }
+    Ok(())
+}
+
+/// Convert an output-relative path into the mirrored `input/` path.
+fn output_to_input_path(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("output/") {
+        return PathBuf::from("input").join(stripped);
+    }
+    PathBuf::from("input").join(path)
+}
+
+/// Strip the leading `output/` segment when exposing final artifacts.
+fn strip_output_prefix(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("output/") {
+        return PathBuf::from(stripped);
+    }
+    PathBuf::from(path)
 }
 
 /// Run multiple verified steps concurrently with bounded concurrency.

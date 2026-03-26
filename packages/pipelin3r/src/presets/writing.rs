@@ -28,14 +28,16 @@ use crate::VerifiedStep;
 use crate::VerifiedStepResult;
 use crate::run_verified_step;
 
-/// Relative filename for the canonical draft within each iteration directory.
-const DRAFT_PATH: &str = "draft.md";
+/// Default artifact filename used when the caller does not override it.
+const DEFAULT_ARTIFACT_PATH: &str = "draft.md";
 /// Relative filename for the critic's report within a breaker directory.
 const CRITIC_REPORT_PATH: &str = "critic-report.json";
 /// Relative filename for the `ProseSmasher` report within an iteration directory.
 const PROSESMASHER_REPORT_PATH: &str = "prosemasher-report.json";
 /// Relative path to the critic report from the iteration directory root.
 const CRITIC_REPORT_INPUT_PATH: &str = "breaker-critic/critic-report.json";
+/// Relative path for merged issues staged as fixer input within an iteration.
+const ISSUES_INPUT_PATH: &str = "input/issues.md";
 /// Default step name used when the caller does not override it.
 const DEFAULT_STEP_NAME: &str = "writing";
 /// Shipped `prosesmasher` preset used by the writing step.
@@ -54,6 +56,8 @@ pub struct WritingStepConfig {
     pub critic_prompt: String,
     /// User-owned instruction for the rewriter fixer.
     pub rewriter_prompt: String,
+    /// Relative artifact path within the preset, e.g. `draft.md` or `article.mdx`.
+    pub artifact_path: String,
     /// Whether to run `ProseSmasher` as a deterministic script breaker.
     pub use_prosemasher: bool,
     /// Maximum fixer iterations after the initial doer run.
@@ -75,6 +79,7 @@ impl WritingStepConfig {
             writer_prompt: writer_prompt.into(),
             critic_prompt: critic_prompt.into(),
             rewriter_prompt: rewriter_prompt.into(),
+            artifact_path: String::from(DEFAULT_ARTIFACT_PATH),
             use_prosemasher: true,
             max_iterations: 3,
         }
@@ -88,8 +93,9 @@ pub const DEFAULT_CRITIC_PROMPT: &str = "Review the draft for clarity, structure
 
 /// Default rewriter prompt used by the CLI wrapper when the caller does not
 /// supply one explicitly.
-pub const DEFAULT_REWRITER_PROMPT: &str = "Revise the draft to fully address the review findings while preserving \
-     what is already strong.";
+pub const DEFAULT_REWRITER_PROMPT: &str = "Fix every concrete review finding with the smallest set of localized edits \
+     that resolves it. Preserve untouched content, meaning, structure, examples, and formatting unless a finding \
+     explicitly requires broader change.";
 
 /// Build a verified step implementing the writing preset.
 ///
@@ -97,21 +103,28 @@ pub const DEFAULT_REWRITER_PROMPT: &str = "Revise the draft to fully address the
 ///
 /// Returns an error if the configured working directory does not exist, is not
 /// a directory, or its contents cannot be enumerated.
+#[allow(
+    clippy::too_many_lines,
+    reason = "preset assembly is clearer as one contiguous wiring block"
+)]
 pub fn build_writing_step(
     config: &WritingStepConfig,
     agent_defaults: AgentConfig,
 ) -> Result<VerifiedStep, PipelineError> {
     validate_workspace_dir(&config.work_dir)?;
     let workspace_inputs = discover_workspace_inputs(&config.work_dir, &config.name)?;
+    let artifact_input_path = artifact_input_path(&config.artifact_path);
+    let artifact_output_path = artifact_output_path(&config.artifact_path);
 
     let mut breakers = Vec::new();
     if config.use_prosemasher {
-        breakers.push(build_prosemasher_breaker());
+        breakers.push(build_prosemasher_breaker(artifact_output_path.clone()));
     }
     breakers.push(build_critic_breaker(
         &config.name,
         &config.critic_prompt,
         &workspace_inputs,
+        artifact_output_path.clone(),
     ));
 
     Ok(VerifiedStep {
@@ -126,11 +139,11 @@ pub fn build_writing_step(
                 },
                 Var::String {
                     placeholder: String::from("{{OUTPUT_PATH}}"),
-                    value: String::from(DRAFT_PATH),
+                    value: artifact_output_path.clone(),
                 },
             ],
             inputs: workspace_inputs.clone(),
-            outputs: vec![String::from(DRAFT_PATH)],
+            outputs: vec![artifact_output_path.clone()],
         },
         breakers,
         fixer: PromptedStep {
@@ -147,11 +160,11 @@ pub fn build_writing_step(
                 },
                 Var::String {
                     placeholder: String::from("{{DRAFT_PATH}}"),
-                    value: String::from(DRAFT_PATH),
+                    value: artifact_input_path.clone(),
                 },
                 Var::String {
                     placeholder: String::from("{{ISSUES_PATH}}"),
-                    value: String::from("issues.md"),
+                    value: String::from(ISSUES_INPUT_PATH),
                 },
                 Var::String {
                     placeholder: String::from("{{CRITIC_REPORT_PATH}}"),
@@ -163,11 +176,15 @@ pub fn build_writing_step(
                 },
                 Var::String {
                     placeholder: String::from("{{OUTPUT_PATH}}"),
-                    value: String::from(DRAFT_PATH),
+                    value: artifact_output_path.clone(),
                 },
             ],
-            inputs: fixer_inputs(&workspace_inputs, config.use_prosemasher),
-            outputs: vec![String::from(DRAFT_PATH)],
+            inputs: fixer_inputs(
+                &workspace_inputs,
+                config.use_prosemasher,
+                artifact_input_path,
+            ),
+            outputs: vec![artifact_output_path],
         },
         max_iterations: config.max_iterations,
         agent_defaults,
@@ -264,9 +281,10 @@ fn build_critic_breaker(
     step_name: &str,
     critic_prompt: &str,
     workspace_inputs: &[String],
+    artifact_output_path: String,
 ) -> Breaker {
     let mut inputs = workspace_inputs.to_vec();
-    inputs.push(String::from(DRAFT_PATH));
+    inputs.push(artifact_output_path.clone());
 
     Breaker::Agent {
         name: String::from("critic"),
@@ -280,7 +298,7 @@ fn build_critic_breaker(
                 },
                 Var::String {
                     placeholder: String::from("{{DRAFT_PATH}}"),
-                    value: String::from(DRAFT_PATH),
+                    value: artifact_output_path,
                 },
                 Var::String {
                     placeholder: String::from("{{OUTPUT_PATH}}"),
@@ -294,16 +312,18 @@ fn build_critic_breaker(
 }
 
 /// Build the optional `ProseSmasher` script breaker.
-fn build_prosemasher_breaker() -> Breaker {
+fn build_prosemasher_breaker(artifact_output_path: String) -> Breaker {
     Breaker::Script {
         name: String::from("prosemasher"),
-        func: Arc::new(|iteration_dir: &Path| run_prosemasher_breaker(iteration_dir)),
+        func: Arc::new(move |iteration_dir: &Path| {
+            run_prosemasher_breaker(iteration_dir, artifact_output_path.as_str())
+        }),
     }
 }
 
 /// Run `ProseSmasher` against the current draft in an iteration directory.
-fn run_prosemasher_breaker(iteration_dir: &Path) -> Result<(), String> {
-    let draft_path = iteration_dir.join(DRAFT_PATH);
+fn run_prosemasher_breaker(iteration_dir: &Path, artifact_output_path: &str) -> Result<(), String> {
+    let draft_path = iteration_dir.join(artifact_output_path);
     let report_path = iteration_dir.join(PROSESMASHER_REPORT_PATH);
     if !draft_path.is_file() {
         let message = format!(
@@ -495,15 +515,27 @@ fn prosemasher_report_is_clean(report: &serde_json::Value) -> bool {
 }
 
 /// Build the fixer's declared inputs.
-fn fixer_inputs(workspace_inputs: &[String], use_prosemasher: bool) -> Vec<String> {
+fn fixer_inputs(
+    workspace_inputs: &[String],
+    use_prosemasher: bool,
+    artifact_input_path: String,
+) -> Vec<String> {
     let mut inputs = workspace_inputs.to_vec();
-    inputs.push(String::from(DRAFT_PATH));
-    inputs.push(String::from("issues.md"));
+    inputs.push(artifact_input_path);
+    inputs.push(String::from(ISSUES_INPUT_PATH));
     inputs.push(String::from(CRITIC_REPORT_INPUT_PATH));
     if use_prosemasher {
         inputs.push(String::from(PROSESMASHER_REPORT_PATH));
     }
     inputs
+}
+
+fn artifact_input_path(artifact_path: &str) -> String {
+    format!("input/{artifact_path}")
+}
+
+fn artifact_output_path(artifact_path: &str) -> String {
+    format!("output/{artifact_path}")
 }
 
 #[cfg(test)]

@@ -33,12 +33,24 @@ fn build_writing_step_uses_workspace_entries() {
         step.doer.inputs,
         vec![String::from("brief.md"), String::from("research")]
     );
-    assert_eq!(step.doer.outputs, vec![String::from(DRAFT_PATH)]);
+    assert_eq!(
+        step.doer.outputs,
+        vec![artifact_output_path(DEFAULT_ARTIFACT_PATH)]
+    );
     assert_eq!(step.breakers.len(), 2);
-    assert_eq!(step.fixer.outputs, vec![String::from(DRAFT_PATH)]);
+    assert_eq!(
+        step.fixer.outputs,
+        vec![artifact_output_path(DEFAULT_ARTIFACT_PATH)]
+    );
     assert!(
-        step.fixer.inputs.contains(&String::from("issues.md")),
+        step.fixer.inputs.contains(&String::from(ISSUES_INPUT_PATH)),
         "fixer should receive merged issues"
+    );
+    assert!(
+        step.fixer
+            .inputs
+            .contains(&artifact_input_path(DEFAULT_ARTIFACT_PATH)),
+        "fixer should receive the staged current draft"
     );
     assert!(
         step.fixer

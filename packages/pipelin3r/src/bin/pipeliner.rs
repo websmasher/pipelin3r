@@ -11,14 +11,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use pipelin3r::{
-    AgentConfig, Auth, DEFAULT_CRITIC_PROMPT, DEFAULT_REWRITER_PROMPT, Executor, RetryConfig,
-    WritingStepConfig, run_writing_step,
+    AgentConfig, Auth, DEFAULT_CRITIC_PROMPT, DEFAULT_REWRITER_PROMPT, Executor, Model,
+    RetryConfig, Tool, WritingStepConfig, run_writing_step,
 };
 use shedul3r_rs_sdk::ClientConfig;
 use tempfile as _;
 use thiserror as _;
 use toml as _;
 use tracing as _;
+
+const CLI_NAME: &str = "pipeliner";
+const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Parsed command-line options for the `write` subcommand.
 #[derive(Debug)]
@@ -33,6 +36,8 @@ struct WriteOptions {
     rewriter_prompt: String,
     /// Whether to run `ProseSmasher`.
     use_prosemasher: bool,
+    /// Relative artifact path written by the writing step.
+    artifact_path: String,
     /// Step name under the working directory.
     name: String,
     /// Maximum fixer iterations.
@@ -72,6 +77,16 @@ async fn real_main() -> Result<(), String> {
         return Err(usage());
     };
 
+    if matches!(subcommand.as_str(), "--version" | "-V" | "version") {
+        println!("{}", version_string());
+        return Ok(());
+    }
+
+    if matches!(subcommand.as_str(), "--help" | "-h" | "help") {
+        println!("{}", usage());
+        return Ok(());
+    }
+
     if subcommand != "write" {
         return Err(usage());
     }
@@ -88,6 +103,7 @@ async fn real_main() -> Result<(), String> {
         writer_prompt: options.writer_prompt,
         critic_prompt: options.critic_prompt,
         rewriter_prompt: options.rewriter_prompt,
+        artifact_path: options.artifact_path,
         use_prosemasher: options.use_prosemasher,
         max_iterations: options.max_iterations,
     };
@@ -122,6 +138,7 @@ fn parse_write_options(args: &[String]) -> Result<WriteOptions, String> {
     let mut rewriter_prompt_inline: Option<String> = None;
     let mut rewriter_prompt_file: Option<PathBuf> = None;
     let mut use_prosemasher = true;
+    let mut artifact_path = String::from("draft.md");
     let mut name = String::from("writing");
     let mut max_iterations: usize = 3;
     let mut shedul3r_url = String::from("http://localhost:7943");
@@ -192,6 +209,13 @@ fn parse_write_options(args: &[String]) -> Result<WriteOptions, String> {
                 use_prosemasher = false;
                 index = index.saturating_add(1);
             }
+            "--artifact-path" => {
+                let value = args
+                    .get(index.saturating_add(1))
+                    .ok_or_else(|| String::from("--artifact-path requires a value"))?;
+                artifact_path.clone_from(value);
+                index = index.saturating_add(2);
+            }
             "--name" => {
                 let value = args
                     .get(index.saturating_add(1))
@@ -230,6 +254,7 @@ fn parse_write_options(args: &[String]) -> Result<WriteOptions, String> {
                 index = index.saturating_add(2);
             }
             "--help" | "-h" => return Err(usage()),
+            "--version" | "-V" => return Err(version_string()),
             other => return Err(format!("unknown argument: {other}\n\n{}", usage())),
         }
     }
@@ -248,6 +273,7 @@ fn parse_write_options(args: &[String]) -> Result<WriteOptions, String> {
         critic_prompt,
         rewriter_prompt,
         use_prosemasher,
+        artifact_path,
         name,
         max_iterations,
         shedul3r_url,
@@ -310,7 +336,14 @@ fn agent_defaults() -> AgentConfig {
     AgentConfig {
         name: String::new(),
         prompt: String::new(),
+        model: Some(Model::Opus4_6),
         execution_timeout: Some(Duration::from_secs(1800)),
+        tools: Some(vec![
+            Tool::Read.to_string(),
+            Tool::Write.to_string(),
+            Tool::Grep.to_string(),
+            Tool::Glob.to_string(),
+        ]),
         provider_id: Some(String::from("claude")),
         max_concurrent: Some(3),
         max_wait: Some(Duration::from_secs(7200)),
@@ -326,12 +359,21 @@ fn agent_defaults() -> AgentConfig {
 
 /// CLI usage text.
 fn usage() -> String {
-    String::from(
+    format!(
         "Usage:\n  \
-         pipeliner write --workdir <dir> [--writer-prompt <text> | --writer-prompt-file <file> | stdin]\n  \
+         {CLI_NAME} --version\n  \
+         {CLI_NAME} write --workdir <dir> [--writer-prompt <text> | --writer-prompt-file <file> | stdin]\n  \
          [--critic-prompt <text> | --critic-prompt-file <file>]\n  \
          [--rewriter-prompt <text> | --rewriter-prompt-file <file>]\n  \
-         [--no-prosemasher] [--name <step-name>] [--max-iterations <n>]\n  \
-         [--shedul3r-url <url>] [--oauth-token <token>] [--dry-run <capture-dir>]",
+         [--no-prosemasher] [--artifact-path <path>] [--name <step-name>] [--max-iterations <n>]\n  \
+         [--shedul3r-url <url>] [--oauth-token <token>] [--dry-run <capture-dir>]"
+    )
+}
+
+fn version_string() -> String {
+    format!(
+        "{CLI_NAME} {CLI_VERSION} ({}, {})",
+        option_env!("PIPELIN3R_GIT_SHA").unwrap_or("unknown"),
+        option_env!("PIPELIN3R_GIT_DIRTY").unwrap_or("unknown"),
     )
 }

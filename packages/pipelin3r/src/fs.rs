@@ -110,3 +110,16 @@ pub fn remove_dir_all(path: &Path) -> Result<(), std::io::Error> {
 pub fn copy(src: &Path, dst: &Path) -> Result<u64, std::io::Error> {
     std::fs::copy(src, dst)
 }
+
+/// Read metadata for a path.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if metadata cannot be read.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "centralized fs module: this IS the approved call site"
+)]
+pub fn metadata(path: &Path) -> Result<std::fs::Metadata, std::io::Error> {
+    std::fs::metadata(path)
+}

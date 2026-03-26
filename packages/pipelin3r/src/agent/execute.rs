@@ -122,8 +122,9 @@ pub fn execute_dry_run_capture(
             if let Some(parent) = local_path.parent() {
                 crate::fs::create_dir_all(parent)?;
             }
-            crate::fs::write(&local_path, "")?;
-            let _ = output_files.insert(output_path.clone(), String::new());
+            let placeholder = format!("(dry-run placeholder for {output_path})\n");
+            crate::fs::write(&local_path, &placeholder)?;
+            let _ = output_files.insert(output_path.clone(), placeholder);
         }
     }
 
