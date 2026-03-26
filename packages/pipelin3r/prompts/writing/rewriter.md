@@ -25,10 +25,10 @@ Rules:
 - Preserve the existing meaning, factual claims, examples, tone, structure, and formatting unless a listed issue requires a change.
 - For each finding, locate the specific span it points to and rewrite that span just enough to fix the issue. Only expand the edit window when a local edit would leave the surrounding text inconsistent.
 - Unless a finding clearly conflicts with the writer instruction or the source bundle, treat every finding as a required fix, not an optional suggestion.
-- `{{OUTPUT_PATH}}` must end up containing a complete standalone revised article, never a diff, summary, notes, or an empty file.
+- `{{OUTPUT_PATH}}` must end up containing a complete standalone revised artifact, never a diff, summary, notes, or an empty file.
 - Start from the full current draft in `{{DRAFT_PATH}}`.
 - Make the smallest complete set of edits that resolves the issues without introducing new ones.
-- Write the full revised article to `{{OUTPUT_PATH}}`, but do not perform a global rewrite just because the whole file must be rewritten to disk.
+- Write the full revised artifact to `{{OUTPUT_PATH}}`, but do not perform a global rewrite just because the whole file must be rewritten to disk.
 - Read `{{OUTPUT_PATH}}` first.
-- Then replace the contents of `{{OUTPUT_PATH}}` with the revised draft.
+- Then replace the contents of `{{OUTPUT_PATH}}` with the revised artifact.
 - Output nothing else.
