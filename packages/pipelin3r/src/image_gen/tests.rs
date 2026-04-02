@@ -242,6 +242,7 @@ fn http_config_with_rate_limit() {
         limit_for_period: 10,
         limit_refresh_period: Duration::from_secs(60),
         timeout_duration: Duration::from_secs(120),
+        jitter_factor: 0.0,
     });
     assert!(config.rate_limiter.is_some());
     assert!(config.rate_limit_config.is_some());

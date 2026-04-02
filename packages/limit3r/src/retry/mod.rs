@@ -29,7 +29,10 @@ impl TokioRetryExecutor {
 
 /// Compute the backoff delay for a given attempt number.
 ///
-/// Formula: `min(wait_duration * backoff_multiplier^attempt, max_delay)`
+/// Formula: `min(jitter(wait_duration * backoff_multiplier^attempt), max_delay)`
+///
+/// Jitter is applied before the `max_delay` clamp so that `max_delay`
+/// remains a hard ceiling on the actual sleep duration.
 ///
 /// Uses `Duration::from_secs_f64` for the multiplication to avoid integer
 /// overflow issues with checked arithmetic on `Duration`.
@@ -45,17 +48,22 @@ fn compute_delay(config: &RetryConfig, attempt: u32) -> Duration {
     #[allow(clippy::arithmetic_side_effects)] // f64 mul of Duration secs by bounded exponent
     let delay_secs = base_secs * factor;
 
-    // Clamp to max_delay
+    // Sanitize: handle NaN, negative, and very large values before
+    // converting to Duration (from_secs_f64 panics on invalid inputs).
     let max_secs = config.max_delay.as_secs_f64();
-    let clamped = if delay_secs > max_secs {
-        max_secs
-    } else if delay_secs.is_nan() || delay_secs < 0.0 {
+    let sanitized = if delay_secs.is_nan() || delay_secs < 0.0 {
         0.0
+    } else if delay_secs > max_secs {
+        max_secs
     } else {
         delay_secs
     };
 
-    Duration::from_secs_f64(clamped)
+    let base_delay = Duration::from_secs_f64(sanitized);
+
+    // Apply jitter, then clamp to max_delay so it remains a hard ceiling.
+    let jittered = crate::jitter::apply_jitter(base_delay, config.jitter_factor);
+    jittered.min(config.max_delay)
 }
 
 impl RetryExecutor for TokioRetryExecutor {

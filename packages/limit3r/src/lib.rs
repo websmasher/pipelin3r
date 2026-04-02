@@ -10,6 +10,7 @@ pub mod traits;
 
 mod bulkhead;
 mod circuit_breaker;
+mod jitter;
 mod rate_limiter;
 mod retry;
 

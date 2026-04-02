@@ -12,6 +12,7 @@ fn rate_limit_config_serde_round_trip() {
         limit_for_period: 100,
         limit_refresh_period: Duration::from_secs(60),
         timeout_duration: Duration::from_millis(500),
+        jitter_factor: 0.0,
     };
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: RateLimitConfig = serde_json::from_str(&json).unwrap();
@@ -30,6 +31,7 @@ fn circuit_breaker_config_serde_round_trip() {
         failure_rate_threshold: 50.0,
         sliding_window_size: 10,
         wait_duration_in_open_state: Duration::from_secs(30),
+        jitter_factor: 0.0,
     };
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: CircuitBreakerConfig = serde_json::from_str(&json).unwrap();
@@ -52,6 +54,7 @@ fn retry_config_serde_round_trip() {
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: 2.0,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: RetryConfig = serde_json::from_str(&json).unwrap();
@@ -69,6 +72,7 @@ fn rate_limit_config_rejects_zero_limit_for_period() {
         limit_for_period: 0,
         limit_refresh_period: Duration::from_secs(1),
         timeout_duration: Duration::from_secs(1),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -79,6 +83,7 @@ fn rate_limit_config_rejects_zero_refresh_period() {
         limit_for_period: 10,
         limit_refresh_period: Duration::ZERO,
         timeout_duration: Duration::from_secs(1),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -89,6 +94,7 @@ fn rate_limit_config_rejects_zero_timeout() {
         limit_for_period: 10,
         limit_refresh_period: Duration::from_secs(1),
         timeout_duration: Duration::ZERO,
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -99,6 +105,7 @@ fn rate_limit_config_accepts_valid() {
         limit_for_period: 10,
         limit_refresh_period: Duration::from_secs(1),
         timeout_duration: Duration::from_secs(1),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_ok());
 }
@@ -109,6 +116,7 @@ fn circuit_breaker_config_rejects_zero_window() {
         failure_rate_threshold: 50.0,
         sliding_window_size: 0,
         wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -119,6 +127,7 @@ fn circuit_breaker_config_rejects_negative_threshold() {
         failure_rate_threshold: -1.0,
         sliding_window_size: 10,
         wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -129,6 +138,7 @@ fn circuit_breaker_config_rejects_threshold_over_100() {
         failure_rate_threshold: 101.0,
         sliding_window_size: 10,
         wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -139,6 +149,7 @@ fn circuit_breaker_config_rejects_zero_wait_duration() {
         failure_rate_threshold: 50.0,
         sliding_window_size: 10,
         wait_duration_in_open_state: Duration::ZERO,
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -149,6 +160,7 @@ fn circuit_breaker_config_accepts_valid() {
         failure_rate_threshold: 50.0,
         sliding_window_size: 10,
         wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_ok());
 }
@@ -159,6 +171,7 @@ fn circuit_breaker_config_accepts_boundary_thresholds() {
         failure_rate_threshold: 0.0,
         sliding_window_size: 10,
         wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.0,
     };
     assert!(zero.validate().is_ok());
 
@@ -166,6 +179,7 @@ fn circuit_breaker_config_accepts_boundary_thresholds() {
         failure_rate_threshold: 100.0,
         sliding_window_size: 10,
         wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.0,
     };
     assert!(hundred.validate().is_ok());
 }
@@ -177,6 +191,7 @@ fn retry_config_rejects_zero_attempts() {
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: 2.0,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -188,6 +203,7 @@ fn retry_config_rejects_nan_multiplier() {
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: f64::NAN,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -199,6 +215,7 @@ fn retry_config_rejects_infinite_multiplier() {
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: f64::INFINITY,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -210,6 +227,7 @@ fn retry_config_rejects_negative_multiplier() {
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: -1.0,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -221,6 +239,7 @@ fn retry_config_rejects_zero_multiplier() {
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: 0.0,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_err());
 }
@@ -232,6 +251,7 @@ fn retry_config_accepts_valid() {
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: 2.0,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(config.validate().is_ok());
 }
@@ -256,41 +276,37 @@ fn bulkhead_config_accepts_valid() {
 
 #[test]
 fn regression_config_validation_rejects_invalid_values() {
-    // Regression: config validation was missing entirely. These specific
-    // cases must all fail validate() — if any passes, the validation
-    // was removed or broken.
-
-    // RateLimitConfig with limit_for_period=0
     let rl = RateLimitConfig {
         limit_for_period: 0,
         limit_refresh_period: Duration::from_secs(1),
         timeout_duration: Duration::from_secs(1),
+        jitter_factor: 0.0,
     };
     assert!(rl.validate().is_err(), "limit_for_period=0 must fail");
 
-    // CircuitBreakerConfig with sliding_window_size=0
     let cb = CircuitBreakerConfig {
         failure_rate_threshold: 50.0,
         sliding_window_size: 0,
         wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.0,
     };
     assert!(cb.validate().is_err(), "sliding_window_size=0 must fail");
 
-    // RetryConfig with max_attempts=0
     let retry = RetryConfig {
         max_attempts: 0,
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: 2.0,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(retry.validate().is_err(), "max_attempts=0 must fail");
 
-    // RetryConfig with backoff_multiplier=INFINITY
     let retry_inf = RetryConfig {
         max_attempts: 3,
         wait_duration: Duration::from_millis(100),
         backoff_multiplier: f64::INFINITY,
         max_delay: Duration::from_secs(10),
+        jitter_factor: 0.0,
     };
     assert!(
         retry_inf.validate().is_err(),
@@ -308,4 +324,155 @@ fn bulkhead_config_serde_round_trip() {
     let deserialized: BulkheadConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.max_concurrent, config.max_concurrent);
     assert_eq!(deserialized.max_wait_duration, config.max_wait_duration);
+}
+
+// --- Jitter factor validation tests ---
+
+#[test]
+fn jitter_factor_rejects_negative() {
+    let rl = RateLimitConfig {
+        limit_for_period: 10,
+        limit_refresh_period: Duration::from_secs(1),
+        timeout_duration: Duration::from_secs(1),
+        jitter_factor: -0.1,
+    };
+    assert!(rl.validate().is_err(), "negative jitter_factor must fail");
+
+    let cb = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 10,
+        wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: -0.5,
+    };
+    assert!(cb.validate().is_err(), "negative jitter_factor must fail");
+
+    let retry = RetryConfig {
+        max_attempts: 3,
+        wait_duration: Duration::from_millis(100),
+        backoff_multiplier: 2.0,
+        max_delay: Duration::from_secs(10),
+        jitter_factor: -1.0,
+    };
+    assert!(
+        retry.validate().is_err(),
+        "negative jitter_factor must fail"
+    );
+}
+
+#[test]
+fn jitter_factor_rejects_over_one() {
+    let rl = RateLimitConfig {
+        limit_for_period: 10,
+        limit_refresh_period: Duration::from_secs(1),
+        timeout_duration: Duration::from_secs(1),
+        jitter_factor: 1.1,
+    };
+    assert!(rl.validate().is_err(), "jitter_factor > 1.0 must fail");
+
+    let cb = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 10,
+        wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 2.0,
+    };
+    assert!(cb.validate().is_err(), "jitter_factor > 1.0 must fail");
+
+    let retry = RetryConfig {
+        max_attempts: 3,
+        wait_duration: Duration::from_millis(100),
+        backoff_multiplier: 2.0,
+        max_delay: Duration::from_secs(10),
+        jitter_factor: 1.5,
+    };
+    assert!(retry.validate().is_err(), "jitter_factor > 1.0 must fail");
+}
+
+#[test]
+fn jitter_factor_accepts_boundaries() {
+    let zero = RateLimitConfig {
+        limit_for_period: 10,
+        limit_refresh_period: Duration::from_secs(1),
+        timeout_duration: Duration::from_secs(1),
+        jitter_factor: 0.0,
+    };
+    assert!(zero.validate().is_ok(), "jitter_factor=0.0 must be valid");
+
+    let one = RateLimitConfig {
+        limit_for_period: 10,
+        limit_refresh_period: Duration::from_secs(1),
+        timeout_duration: Duration::from_secs(1),
+        jitter_factor: 1.0,
+    };
+    assert!(one.validate().is_ok(), "jitter_factor=1.0 must be valid");
+
+    let mid = RetryConfig {
+        max_attempts: 3,
+        wait_duration: Duration::from_millis(100),
+        backoff_multiplier: 2.0,
+        max_delay: Duration::from_secs(10),
+        jitter_factor: 0.5,
+    };
+    assert!(mid.validate().is_ok(), "jitter_factor=0.5 must be valid");
+}
+
+#[test]
+fn jitter_factor_serde_default_omitted() {
+    // Configs serialized without jitter_factor should deserialize with 0.0
+    // duration_serde uses f64 fractional seconds
+    let json = r#"{"limit_for_period":10,"limit_refresh_period":1.0,"timeout_duration":1.0}"#;
+    let config: RateLimitConfig = serde_json::from_str(json).unwrap();
+    #[allow(clippy::float_cmp, reason = "test: verifying exact serde default")]
+    {
+        assert_eq!(config.jitter_factor, 0.0);
+    }
+}
+
+#[test]
+fn jitter_factor_rejects_nan() {
+    let rl = RateLimitConfig {
+        limit_for_period: 10,
+        limit_refresh_period: Duration::from_secs(1),
+        timeout_duration: Duration::from_secs(1),
+        jitter_factor: f64::NAN,
+    };
+    assert!(rl.validate().is_err(), "NaN jitter_factor must fail");
+
+    let cb = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 10,
+        wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: f64::NAN,
+    };
+    assert!(cb.validate().is_err(), "NaN jitter_factor must fail");
+
+    let retry = RetryConfig {
+        max_attempts: 3,
+        wait_duration: Duration::from_millis(100),
+        backoff_multiplier: 2.0,
+        max_delay: Duration::from_secs(10),
+        jitter_factor: f64::NAN,
+    };
+    assert!(retry.validate().is_err(), "NaN jitter_factor must fail");
+}
+
+#[test]
+fn jitter_factor_rejects_infinity() {
+    let rl = RateLimitConfig {
+        limit_for_period: 10,
+        limit_refresh_period: Duration::from_secs(1),
+        timeout_duration: Duration::from_secs(1),
+        jitter_factor: f64::INFINITY,
+    };
+    assert!(rl.validate().is_err(), "INFINITY jitter_factor must fail");
+
+    let neg = RateLimitConfig {
+        limit_for_period: 10,
+        limit_refresh_period: Duration::from_secs(1),
+        timeout_duration: Duration::from_secs(1),
+        jitter_factor: f64::NEG_INFINITY,
+    };
+    assert!(
+        neg.validate().is_err(),
+        "NEG_INFINITY jitter_factor must fail"
+    );
 }

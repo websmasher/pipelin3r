@@ -12,6 +12,7 @@ fn test_config(limit: u32, refresh: Duration, timeout: Duration) -> RateLimitCon
         limit_for_period: limit,
         limit_refresh_period: refresh,
         timeout_duration: timeout,
+        jitter_factor: 0.0,
     }
 }
 
@@ -330,4 +331,79 @@ async fn multiple_keys_are_independent() {
     // key-b should still succeed
     let result = limiter.acquire_permission("key-b", &config).await;
     assert!(result.is_ok());
+}
+
+// --- Jitter tests ---
+
+#[tokio::test]
+async fn jitter_does_not_break_rate_limiting() {
+    // With jitter enabled, permits should still be correctly counted.
+    let limiter = InMemoryRateLimiter::new();
+    let config = RateLimitConfig {
+        limit_for_period: 2,
+        limit_refresh_period: Duration::from_millis(100),
+        timeout_duration: Duration::from_millis(300),
+        jitter_factor: 0.5,
+    };
+
+    // Consume both permits
+    limiter.acquire_permission("key-a", &config).await.unwrap();
+    limiter.acquire_permission("key-a", &config).await.unwrap();
+
+    // Third should eventually succeed after window refresh (jitter may
+    // shift the sleep slightly, but timeout is generous enough).
+    let result = limiter.acquire_permission("key-a", &config).await;
+    assert!(
+        result.is_ok(),
+        "rate limiter with jitter should still grant permits after window refresh"
+    );
+}
+
+#[tokio::test]
+async fn jitter_does_not_overshoot_timeout() {
+    // With high jitter, the actual wall-clock wait must not exceed
+    // timeout_duration (plus small scheduling epsilon).
+    let limiter = InMemoryRateLimiter::new();
+    let config = RateLimitConfig {
+        limit_for_period: 1,
+        limit_refresh_period: Duration::from_millis(200),
+        timeout_duration: Duration::from_millis(50),
+        jitter_factor: 1.0,
+    };
+
+    // Exhaust the permit
+    limiter.acquire_permission("key-a", &config).await.unwrap();
+
+    let start = Instant::now();
+    // Second acquire should fail (timeout too short for refresh), but
+    // must not take longer than timeout + scheduling epsilon.
+    let _result = limiter.acquire_permission("key-a", &config).await;
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "acquire took {elapsed:?}, should not overshoot timeout by more than scheduling jitter"
+    );
+}
+
+#[tokio::test]
+async fn expired_window_does_not_panic() {
+    // If the window expires while we wait for the lock (or between computing
+    // sleep_until and sleeping), the code must not panic on duration_since.
+    let limiter = InMemoryRateLimiter::new();
+    let config = RateLimitConfig {
+        limit_for_period: 1,
+        limit_refresh_period: Duration::from_millis(1),
+        timeout_duration: Duration::from_millis(200),
+        jitter_factor: 0.5,
+    };
+
+    // Exhaust permit
+    limiter.acquire_permission("key-a", &config).await.unwrap();
+
+    // Wait for window to expire before the next acquire
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Must not panic even though the window expired before we sleep
+    let result = limiter.acquire_permission("key-a", &config).await;
+    assert!(result.is_ok(), "should succeed after window expired");
 }

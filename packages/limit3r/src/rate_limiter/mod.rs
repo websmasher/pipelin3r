@@ -145,7 +145,15 @@ impl RateLimiter for InMemoryRateLimiter {
                 });
             }
 
-            tokio::time::sleep_until(sleep_until).await;
+            // Use saturating_duration_since: if the window already expired
+            // while we held the lock, remaining is zero (not a panic).
+            let now = Instant::now();
+            let remaining = sleep_until.saturating_duration_since(now);
+            let jittered = crate::jitter::apply_jitter(remaining, config.jitter_factor);
+            // Cap at the time left before deadline so jitter cannot overshoot
+            // the caller's timeout.
+            let time_to_deadline = deadline.saturating_duration_since(now);
+            tokio::time::sleep(jittered.min(time_to_deadline)).await;
         }
     }
 }

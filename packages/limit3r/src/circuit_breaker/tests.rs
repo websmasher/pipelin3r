@@ -12,6 +12,7 @@ fn test_config(threshold: f64, window: u32, wait: Duration) -> CircuitBreakerCon
         failure_rate_threshold: threshold,
         sliding_window_size: window,
         wait_duration_in_open_state: wait,
+        jitter_factor: 0.0,
     }
 }
 
@@ -568,4 +569,243 @@ async fn reopens_after_failed_probe() {
     // Should be open again (no wait elapsed)
     let result = cb.check_permitted("key-a", &config);
     assert!(result.is_err());
+}
+
+// --- Jitter tests ---
+
+#[tokio::test]
+async fn jitter_varies_half_open_transition_time() {
+    // With jitter_factor=1.0, the wait can be [0, 2*base]. We verify that
+    // the circuit still transitions through the full lifecycle.
+    let cb = InMemoryCircuitBreaker::new();
+    let config = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 4,
+        wait_duration_in_open_state: Duration::from_millis(50),
+        jitter_factor: 0.5,
+    };
+
+    // Force open
+    cb.check_permitted("key-a", &config).unwrap();
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    let _ = cb.check_permitted("key-a", &config); // opens
+
+    // Wait long enough for any jittered duration (max = 50ms * 1.5 = 75ms)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Should transition to half-open
+    let probe = cb.check_permitted("key-a", &config);
+    assert!(
+        probe.is_ok(),
+        "circuit should be half-open after jittered wait"
+    );
+
+    // Close it
+    cb.record_success("key-a");
+    let closed = cb.check_permitted("key-a", &config);
+    assert!(
+        closed.is_ok(),
+        "circuit should be closed after successful probe"
+    );
+}
+
+#[test]
+fn jittered_wait_is_set_when_circuit_opens() {
+    let cb = InMemoryCircuitBreaker::new();
+    let config = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 4,
+        wait_duration_in_open_state: Duration::from_secs(5),
+        jitter_factor: 0.5,
+    };
+
+    cb.check_permitted("key-a", &config).unwrap();
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    let _ = cb.check_permitted("key-a", &config); // triggers open
+
+    let map = cb.state.read();
+    let circuit = map.get("key-a").unwrap();
+    assert_eq!(circuit.state, State::Open);
+    assert!(
+        circuit.jittered_wait.is_some(),
+        "jittered_wait must be set when circuit opens"
+    );
+    let wait = circuit.jittered_wait.unwrap();
+    // With factor=0.5, range is [2.5s, 7.5s]
+    assert!(
+        wait >= Duration::from_millis(2500),
+        "jittered_wait {wait:?} below lower bound 2.5s"
+    );
+    assert!(
+        wait <= Duration::from_millis(7500),
+        "jittered_wait {wait:?} above upper bound 7.5s"
+    );
+}
+
+#[tokio::test]
+async fn jittered_wait_cleared_on_close() {
+    let cb = InMemoryCircuitBreaker::new();
+    let config = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 4,
+        wait_duration_in_open_state: Duration::from_millis(1),
+        jitter_factor: 0.5,
+    };
+
+    // Force open
+    cb.check_permitted("key-a", &config).unwrap();
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    cb.record_failure("key-a");
+    let _ = cb.check_permitted("key-a", &config);
+
+    // Wait for half-open (wait is <=2ms with factor 0.5)
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let _ = cb.check_permitted("key-a", &config); // half-open
+
+    // Close via success
+    cb.record_success("key-a");
+
+    let map = cb.state.read();
+    let circuit = map.get("key-a").unwrap();
+    assert_eq!(circuit.state, State::Closed);
+    assert!(
+        circuit.jittered_wait.is_none(),
+        "jittered_wait must be cleared when circuit closes"
+    );
+}
+
+#[tokio::test]
+async fn reopen_after_failed_probe_preserves_jittered_wait() {
+    // When a HalfOpen probe fails, the circuit re-opens but keeps the
+    // original jittered_wait (config not available in record_outcome).
+    let cb = InMemoryCircuitBreaker::new();
+    let config = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 4,
+        wait_duration_in_open_state: Duration::from_millis(50),
+        jitter_factor: 0.5,
+    };
+
+    // Force open
+    cb.check_permitted("k", &config).unwrap();
+    cb.record_failure("k");
+    cb.record_failure("k");
+    cb.record_failure("k");
+    let _ = cb.check_permitted("k", &config);
+
+    let first_wait = {
+        let map = cb.state.read();
+        map.get("k").unwrap().jittered_wait
+    };
+    assert!(first_wait.is_some());
+
+    // Transition to half-open and fail the probe
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    cb.check_permitted("k", &config).unwrap(); // half-open
+    cb.record_failure("k"); // re-opens
+
+    let second_wait = {
+        let map = cb.state.read();
+        map.get("k").unwrap().jittered_wait
+    };
+    // Re-open reuses the original jittered_wait (intentional design)
+    assert_eq!(
+        first_wait, second_wait,
+        "re-open after failed probe must preserve jittered_wait"
+    );
+}
+
+#[tokio::test]
+async fn each_open_cycle_gets_fresh_jittered_wait() {
+    // Each close→reopen cycle should compute a fresh jittered_wait.
+    let cb = InMemoryCircuitBreaker::new();
+    let config = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 4,
+        wait_duration_in_open_state: Duration::from_millis(1),
+        jitter_factor: 0.5,
+    };
+
+    let mut waits = Vec::new();
+    for _ in 0..10 {
+        cb.check_permitted("k", &config).unwrap();
+        cb.record_failure("k");
+        cb.record_failure("k");
+        cb.record_failure("k");
+        let _ = cb.check_permitted("k", &config); // opens
+
+        let w = {
+            let map = cb.state.read();
+            map.get("k").unwrap().jittered_wait.unwrap()
+        };
+        waits.push(w);
+
+        // Close it
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        cb.check_permitted("k", &config).unwrap(); // half-open
+        cb.record_success("k"); // close
+
+        let map = cb.state.read();
+        assert!(
+            map.get("k").unwrap().jittered_wait.is_none(),
+            "jittered_wait must be None after close"
+        );
+    }
+
+    // With 10 independent samples from [0.5ms, 1.5ms], we should see
+    // at least 2 distinct values.
+    #[allow(
+        clippy::redundant_closure_for_method_calls,
+        reason = "as_nanos takes &self, not self"
+    )]
+    let distinct: std::collections::BTreeSet<_> = waits.iter().map(|d| d.as_nanos()).collect();
+    assert!(
+        distinct.len() >= 2,
+        "expected multiple distinct jittered_wait values, got {waits:?}"
+    );
+}
+
+#[test]
+fn eviction_preserves_jittered_wait_of_open_circuit() {
+    let cb = InMemoryCircuitBreaker::with_max_keys(3);
+    let config = CircuitBreakerConfig {
+        failure_rate_threshold: 50.0,
+        sliding_window_size: 4,
+        wait_duration_in_open_state: Duration::from_secs(60),
+        jitter_factor: 0.5,
+    };
+
+    // Open a circuit
+    cb.check_permitted("open-key", &config).unwrap();
+    cb.record_failure("open-key");
+    cb.record_failure("open-key");
+    cb.record_failure("open-key");
+    let _ = cb.check_permitted("open-key", &config);
+
+    let original_wait = {
+        let map = cb.state.read();
+        map.get("open-key").unwrap().jittered_wait
+    };
+    assert!(original_wait.is_some());
+
+    // Trigger eviction by filling with idle keys
+    for i in 0..4 {
+        cb.check_permitted(&format!("idle-{i}"), &config).unwrap();
+    }
+
+    // open-key must survive with jittered_wait intact
+    let map = cb.state.read();
+    let c = map
+        .get("open-key")
+        .expect("open circuit must survive eviction");
+    assert_eq!(c.state, State::Open);
+    assert_eq!(
+        c.jittered_wait, original_wait,
+        "eviction must not corrupt jittered_wait"
+    );
 }

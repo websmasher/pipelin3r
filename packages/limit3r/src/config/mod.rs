@@ -16,6 +16,9 @@ pub struct RateLimitConfig {
     /// Maximum time to wait for a permit before failing.
     #[serde(with = "duration_serde")]
     pub timeout_duration: Duration,
+    /// Jitter factor applied to the window-wait sleep (0.0 = none, 1.0 = ±100%).
+    #[serde(default)]
+    pub jitter_factor: f64,
 }
 
 /// Circuit breaker configuration: opens the circuit when failures exceed a threshold.
@@ -28,6 +31,13 @@ pub struct CircuitBreakerConfig {
     /// How long the circuit stays open before transitioning to half-open.
     #[serde(with = "duration_serde")]
     pub wait_duration_in_open_state: Duration,
+    /// Jitter factor applied to the open-state wait duration (0.0 = none, 1.0 = ±100%).
+    ///
+    /// Sampled once when the circuit opens. If the circuit re-opens after a
+    /// failed half-open probe, the same jittered value is reused until the
+    /// circuit fully closes.
+    #[serde(default)]
+    pub jitter_factor: f64,
 }
 
 /// Retry configuration: controls exponential backoff retry behavior.
@@ -43,6 +53,9 @@ pub struct RetryConfig {
     /// Upper bound on the backoff duration.
     #[serde(with = "duration_serde")]
     pub max_delay: Duration,
+    /// Jitter factor applied to the backoff delay (0.0 = none, 1.0 = ±100%).
+    #[serde(default)]
+    pub jitter_factor: f64,
 }
 
 /// Bulkhead configuration: limits concurrent execution per key.
@@ -71,6 +84,11 @@ impl RateLimitConfig {
         if self.timeout_duration.is_zero() {
             return Err("timeout_duration must be greater than zero".to_owned());
         }
+        if !self.jitter_factor.is_finite() || self.jitter_factor < 0.0 || self.jitter_factor > 1.0 {
+            return Err(
+                "jitter_factor must be a finite number between 0.0 and 1.0 inclusive".to_owned(),
+            );
+        }
         Ok(())
     }
 }
@@ -93,6 +111,11 @@ impl CircuitBreakerConfig {
         if self.wait_duration_in_open_state.is_zero() {
             return Err("wait_duration_in_open_state must be greater than zero".to_owned());
         }
+        if !self.jitter_factor.is_finite() || self.jitter_factor < 0.0 || self.jitter_factor > 1.0 {
+            return Err(
+                "jitter_factor must be a finite number between 0.0 and 1.0 inclusive".to_owned(),
+            );
+        }
         Ok(())
     }
 }
@@ -109,6 +132,11 @@ impl RetryConfig {
         }
         if !self.backoff_multiplier.is_finite() || self.backoff_multiplier <= 0.0 {
             return Err("backoff_multiplier must be a positive finite number".to_owned());
+        }
+        if !self.jitter_factor.is_finite() || self.jitter_factor < 0.0 || self.jitter_factor > 1.0 {
+            return Err(
+                "jitter_factor must be a finite number between 0.0 and 1.0 inclusive".to_owned(),
+            );
         }
         Ok(())
     }

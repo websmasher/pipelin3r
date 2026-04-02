@@ -33,6 +33,8 @@ struct CircuitState {
     results: VecDeque<(Instant, bool)>,
     /// Timestamp when the circuit transitioned to `Open`.
     opened_at: Option<Instant>,
+    /// Actual wait duration after jitter, computed once when the circuit opens.
+    jittered_wait: Option<std::time::Duration>,
 }
 
 /// Multiplier for deriving the entry TTL from the open-state wait duration.
@@ -46,6 +48,7 @@ impl CircuitState {
             state: State::Closed,
             results: VecDeque::new(),
             opened_at: None,
+            jittered_wait: None,
         }
     }
 
@@ -124,23 +127,14 @@ impl InMemoryCircuitBreaker {
     }
 }
 
-impl CircuitBreaker for InMemoryCircuitBreaker {
-    fn check_permitted(
-        &self,
-        key: &str,
-        config: &CircuitBreakerConfig,
-    ) -> Result<(), Limit3rError> {
-        let mut map = self.state.write();
-
-        // Ensure the current key exists before eviction so it is never
-        // a victim.
+impl InMemoryCircuitBreaker {
+    /// Ensure the key exists and evict stale entries when over capacity.
+    fn ensure_and_evict(&self, map: &mut StateMap, key: &str) {
         let needs_insert = !map.contains_key(key);
         if needs_insert {
             let _prev = map.insert(key.to_owned(), CircuitState::new());
         }
 
-        // Evict when the map exceeds the size limit, but never evict the
-        // current key and never drop circuits that are accumulating failures.
         if map.len() > self.max_tracked_keys {
             // First pass: remove closed circuits with empty history (truly idle).
             map.retain(|k, circuit| {
@@ -156,13 +150,24 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
                     .filter(|(k, c)| k.as_str() != key && c.state == State::Closed)
                     .map(|(k, c)| (k.clone(), c.results.len()))
                     .collect();
-                // Evict those with fewest results first (least information loss).
                 closed_with_history.sort_by_key(|(_, len)| *len);
                 for (evict_key, _) in closed_with_history.into_iter().take(excess) {
                     let _removed = map.remove(&evict_key);
                 }
             }
         }
+    }
+}
+
+impl CircuitBreaker for InMemoryCircuitBreaker {
+    fn check_permitted(
+        &self,
+        key: &str,
+        config: &CircuitBreakerConfig,
+    ) -> Result<(), Limit3rError> {
+        let mut map = self.state.write();
+
+        self.ensure_and_evict(&mut map, key);
 
         let Some(circuit) = map.get_mut(key) else {
             return Err(Limit3rError::CircuitOpen {
@@ -192,6 +197,10 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
                 if rate >= config.failure_rate_threshold {
                     circuit.state = State::Open;
                     circuit.opened_at = Some(Instant::now());
+                    circuit.jittered_wait = Some(crate::jitter::apply_jitter(
+                        config.wait_duration_in_open_state,
+                        config.jitter_factor,
+                    ));
                     tracing::info!(key, rate, "Circuit breaker opened");
                     Err(Limit3rError::CircuitOpen {
                         key: key.to_owned(),
@@ -201,10 +210,13 @@ impl CircuitBreaker for InMemoryCircuitBreaker {
                 }
             }
             State::Open => {
-                // Check if wait duration has elapsed
-                let should_transition = circuit.opened_at.is_some_and(|opened| {
-                    Instant::now().duration_since(opened) >= config.wait_duration_in_open_state
-                });
+                // Check if jittered wait duration has elapsed
+                let wait = circuit
+                    .jittered_wait
+                    .unwrap_or(config.wait_duration_in_open_state);
+                let should_transition = circuit
+                    .opened_at
+                    .is_some_and(|opened| Instant::now().duration_since(opened) >= wait);
 
                 if should_transition {
                     circuit.state = State::HalfOpen;
@@ -249,9 +261,12 @@ impl InMemoryCircuitBreaker {
                 if success {
                     circuit.state = State::Closed;
                     circuit.opened_at = None;
+                    circuit.jittered_wait = None;
                     circuit.results.clear();
                     tracing::debug!(key, "Circuit breaker closed after successful probe");
                 } else {
+                    // Re-open: keep existing jittered_wait (config not
+                    // available here), just reset the timer.
                     circuit.state = State::Open;
                     circuit.opened_at = Some(Instant::now());
                     tracing::debug!(key, "Circuit breaker reopened after failed probe");
